@@ -1,14 +1,17 @@
+//! Nature of p2p messages
+
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
+/// Types of p2p messages
 #[derive(Serialize, Deserialize)]
 pub enum Message {
     /// Peer's public address
-    MyPubAddr(SocketAddr),
+    RetrievePubAddr(SocketAddr),
     /// Request for list of peers
-    GiveMeAListOfPeers,
-    /// Response for GiveMeAListOfPeers with peers info
-    TakePeersList(Vec<SocketAddr>),
+    RetrievePeerList,
+    /// Response for RetrievePeerList with peers info
+    RespondToListQuery(Vec<SocketAddr>),
     /// Some random message
-    Info(String),
+    RequestRandomInfo(String),
 }

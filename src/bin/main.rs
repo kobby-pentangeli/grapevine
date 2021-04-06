@@ -16,25 +16,25 @@ fn main() {
                 .required(true),
         )
         .arg(
-            Arg::with_name("period")
-                .long("period")
-                .long_help("Sets the period (in seconds) of emitting messages to other peers.\n   Example: --period 5")
+            Arg::with_name("duration")
+                .long("duration")
+                .long_help("Sets the duration (in seconds) of emitting messages to other peers.\n   Example: --duration 5")
                 .takes_value(true)
                 .required(true),
         )
         .arg(
-            Arg::with_name("connect")
-                .long("connect")
-                .long_help("Sets the optional peer address to connect to.\n   Example: --connect 127.0.0.1:8000")
+            Arg::with_name("connection")
+                .long("connection")
+                .long_help("Sets the optional peer address to connect to.\n   Example: --connection 127.0.0.1:8000")
                 .takes_value(true),
         )
         .get_matches();
 
     let port = value_t!(arg_matches, "port", u32).unwrap();
-    let period = value_t!(arg_matches, "period", u32).unwrap();
-    let connect = value_t!(arg_matches, "connect", String).ok();
+    let duration = value_t!(arg_matches, "duration", u32).unwrap();
+    let connection = value_t!(arg_matches, "connection", String).ok();
 
     logger::init();
 
-    Node::new(port, period, connect).unwrap().execute();
+    Node::new(port, duration, connection).unwrap().execute();
 }

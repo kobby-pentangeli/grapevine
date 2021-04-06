@@ -6,7 +6,6 @@
     no_mangle_const_items,
     unknown_crate_types
 )]
-/*
 #![warn(
     bad_style,
     deprecated,
@@ -27,15 +26,14 @@
     while_true,
     clippy::unicode_not_nfc,
     clippy::wrong_pub_self_convention,
-    clippy::option_unwrap_used,
+    clippy::unwrap_used,
     trivial_casts,
     trivial_numeric_casts,
     unused_extern_crates,
     unused_import_braces,
     unused_qualifications,
-    unused_results
 )]
-*/
+
 /// Utility for testing
 pub mod logger;
 /// Peer-to-peer messages

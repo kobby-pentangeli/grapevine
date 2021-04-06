@@ -54,25 +54,25 @@ impl Node {
     /// Executes the peer-to-peer process
     pub fn execute(mut self) {
         if let Some(addr) = &self.connection {
-            let mut network = self.network.lock().unwrap();
+            let mut network = self.network.lock().expect("Failed to lock network");
 
             // Connection to the first peer
             match network.connect(Transport::FramedTcp, addr) {
                 Ok((endpoint, _)) => {
                     {
-                        let mut nodes = self.peers.lock().unwrap();
+                        let mut nodes = self.peers.lock().expect("Unable to fetch peer list");
                         nodes.add_old_one(endpoint);
                     }
 
                     send_message(
                         &mut network,
                         endpoint,
-                        &Message::MyPubAddr(self.node_addr.clone()),
+                        &Message::RetrievePubAddr(self.node_addr.clone()),
                     );
 
                     // Request a list of existing peers
                     // Response will be in event queue
-                    send_message(&mut network, endpoint, &Message::GiveMeAListOfPeers);
+                    send_message(&mut network, endpoint, &Message::RetrievePeerList);
                 }
                 Err(_) => {
                     println!("Failed to connect to {}", &addr);
@@ -87,20 +87,20 @@ impl Node {
             match self.event_queue.receive() {
                 // Waiting events
                 NetEvent::Message(message_sender, input_data) => {
-                    match bincode::deserialize(&input_data).unwrap() {
-                        Message::MyPubAddr(pub_addr) => {
-                            let mut peers = self.peers.lock().unwrap();
+                    match bincode::deserialize(&input_data).expect("Failed to deserialize input data") {
+                        Message::RetrievePubAddr(pub_addr) => {
+                            let mut peers = self.peers.lock().expect("Error in retrieving peer list");
                             peers.add_new_one(message_sender, pub_addr);
                         }
-                        Message::GiveMeAListOfPeers => {
+                        Message::RetrievePeerList => {
                             let list = {
-                                let peers = self.peers.lock().unwrap();
+                                let peers = self.peers.lock().expect("Unable to fetch peers");
                                 peers.get_peers_list()
                             };
-                            let msg = Message::TakePeersList(list);
-                            send_message(&mut self.network.lock().unwrap(), message_sender, &msg);
+                            let msg = Message::RespondToListQuery(list);
+                            send_message(&mut self.network.lock().expect("Error in sending message"), message_sender, &msg);
                         }
-                        Message::TakePeersList(addrs) => {
+                        Message::RespondToListQuery(addrs) => {
                             let filtered: Vec<&SocketAddr> = addrs
                                 .iter()
                                 .filter_map(|x| {
@@ -115,7 +115,7 @@ impl Node {
 
                             log_connected_to_the_peers(&filtered);
 
-                            let mut network = self.network.lock().unwrap();
+                            let mut network = self.network.lock().expect("Unable to lock network");
 
                             for peer in filtered {
                                 if peer == &message_sender.addr() {
@@ -124,31 +124,31 @@ impl Node {
 
                                 // connecting to peer
                                 let (endpoint, _) =
-                                    network.connect(Transport::FramedTcp, *peer).unwrap();
+                                    network.connect(Transport::FramedTcp, *peer).expect("Error in connecting to peer");
 
                                 // sending public address
-                                let msg = Message::MyPubAddr(self.node_addr);
+                                let msg = Message::RetrievePubAddr(self.node_addr);
                                 send_message(&mut network, endpoint, &msg);
 
                                 // saving peer
-                                self.peers.lock().unwrap().add_old_one(endpoint);
+                                self.peers.lock().expect("Error in saving peer").add_old_one(endpoint);
                                 // self.peers.add_old_one(endpoint);
                             }
                         }
-                        Message::Info(text) => {
+                        Message::RequestRandomInfo(text) => {
                             let pub_addr = self
                                 .peers
                                 .lock()
-                                .unwrap()
+                                .expect("Error in fetching peers")
                                 .get_pub_addr(&message_sender)
-                                .unwrap();
+                                .expect("Error in fetching public address");
                             log_message_received(&pub_addr, &text);
                         }
                     }
                 }
                 NetEvent::Connected(_, _) => {}
                 NetEvent::Disconnected(endpoint) => {
-                    let mut peers = self.peers.lock().unwrap();
+                    let mut peers = self.peers.lock().expect("Unable to fetch peer list");
                     NodeMap::drop(&mut peers, endpoint);
                     // self.peers.drop(endpoint);
                 }
@@ -166,18 +166,18 @@ impl Node {
             loop {
                 thread::sleep(sleep_duration);
 
-                let peers = peers_mut.lock().unwrap();
-                let receivers = peers.receivers();
+                let peers = peers_mut.lock().expect("Unable to lock peers");
+                let receivers = peers.fetch_receivers();
 
                 // if there are no receivers, skip
                 if receivers.len() == 0 {
                     continue;
                 }
 
-                let mut network = network_mut.lock().unwrap();
+                let mut network = network_mut.lock().expect("Failed to lock network");
 
                 let msg_text = generate_random_message();
-                let msg = Message::Info(msg_text.clone());
+                let msg = Message::RequestRandomInfo(msg_text.clone());
 
                 log_sending_message(
                     &msg_text,
@@ -196,7 +196,7 @@ impl Node {
 }
 
 fn send_message(network: &mut Network, to: Endpoint, msg: &Message) {
-    let output_data = bincode::serialize(msg).unwrap();
+    let output_data = bincode::serialize(msg).expect("Failed to serialize message");
     network.send(to, &output_data);
 }
 

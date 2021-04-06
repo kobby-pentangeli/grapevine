@@ -1,25 +1,32 @@
+//! Functionality for map of peers and related information
+
 use message_io::network::Endpoint;
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::net::SocketAddr;
 
+/// Structure of the map of peers in the network
 pub struct NodeMap {
     map: HashMap<Endpoint, NodeInfo>,
     self_pub_addr: SocketAddr,
 }
 
+/// Structure of a peer address
 pub struct NodeAddr {
+    /// Public address
     pub public: SocketAddr,
+    /// SendTo address
     pub endpoint: Endpoint,
 }
 
-// #[derive(Debug)]
+/// Information on a peer
 enum NodeInfo {
-    OldOne,
-    NewOne(SocketAddr),
+    OldInfo,
+    NewInfo(SocketAddr),
 }
 
 impl NodeMap {
+    /// Generates a new node map
     pub fn new(self_pub_addr: SocketAddr) -> Self {
         Self {
             map: HashMap::new(),
@@ -27,29 +34,33 @@ impl NodeMap {
         }
     }
 
+    /// Adds an old info on the node
     pub fn add_old_one(&mut self, endpoint: Endpoint) {
         // println!("add old one: {}", endpoint.addr());
-        self.map.insert(endpoint, NodeInfo::OldOne);
+        self.map.insert(endpoint, NodeInfo::OldInfo);
     }
 
+    /// Adds a new info on the node
     pub fn add_new_one(&mut self, endpoint: Endpoint, pub_addr: SocketAddr) {
         // println!("add new one: {} ({})", endpoint.addr(), pub_addr);
-        self.map.insert(endpoint, NodeInfo::NewOne(pub_addr));
+        self.map.insert(endpoint, NodeInfo::NewInfo(pub_addr));
     }
 
+    /// Removes a node's endpoint from the map
     pub fn drop(&mut self, endpoint: Endpoint) {
         // println!("drop: {}", endpoint.addr());
         self.map.remove(&endpoint);
     }
 
+    /// Retrieves the list of peers in the network
     pub fn get_peers_list(&self) -> Vec<SocketAddr> {
         let mut list: Vec<SocketAddr> = Vec::with_capacity(self.map.len() + 1);
         list.push(self.self_pub_addr);
         self.map
             .iter()
             .map(|(endpoint, info)| match info {
-                NodeInfo::OldOne => endpoint.addr(),
-                NodeInfo::NewOne(public_addr) => public_addr.clone(),
+                NodeInfo::OldInfo => endpoint.addr(),
+                NodeInfo::NewInfo(public_addr) => public_addr.clone(),
             })
             .for_each(|addr| {
                 list.push(addr);
@@ -58,13 +69,14 @@ impl NodeMap {
         list
     }
 
-    pub fn receivers(&self) -> Vec<NodeAddr> {
+    /// Retrieves peer addresses
+    pub fn fetch_receivers(&self) -> Vec<NodeAddr> {
         self.map
             .iter()
             .map(|(endpoint, info)| {
                 let public = match info {
-                    NodeInfo::OldOne => endpoint.addr(),
-                    NodeInfo::NewOne(public_addr) => public_addr.clone(),
+                    NodeInfo::OldInfo => endpoint.addr(),
+                    NodeInfo::NewInfo(public_addr) => public_addr.clone(),
                 };
                 NodeAddr {
                     endpoint: endpoint.clone(),
@@ -74,10 +86,11 @@ impl NodeMap {
             .collect()
     }
 
+    /// Retrieves the public address of the node
     pub fn get_pub_addr(&self, endpoint: &Endpoint) -> Option<SocketAddr> {
         self.map.get(endpoint).map(|founded| match founded {
-            NodeInfo::OldOne => endpoint.addr(),
-            NodeInfo::NewOne(addr) => addr.clone(),
+            NodeInfo::OldInfo => endpoint.addr(),
+            NodeInfo::NewInfo(addr) => addr.clone(),
         })
     }
 }
