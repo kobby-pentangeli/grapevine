@@ -1,10 +1,7 @@
-use ananse::{
-    logger,
-    peer,
-};
+use ananse::{logger, node};
 
 use clap::{value_t, App, Arg};
-use peer::Peer;
+use node::Node;
 
 fn main() {
     let arg_matches = App::new("Ananse")
@@ -39,5 +36,5 @@ fn main() {
 
     logger::init();
 
-    Peer::new(port, period, connect).unwrap().run();
+    Node::new(port, period, connect).unwrap().execute();
 }

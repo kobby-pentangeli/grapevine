@@ -1,5 +1,7 @@
-use crate::peers_map::{PeerAddr, PeersMap};
+//! Functionality of a node in the p2p network
+
 use crate::message::Message;
+use crate::node_map::{NodeAddr, NodeMap};
 use log::info;
 use message_io::events::EventQueue;
 use message_io::network::{Endpoint, NetEvent, Network, Transport};
@@ -8,55 +10,64 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-pub struct Peer {
-    peers: Arc<Mutex<PeersMap>>,
-    public_addr: SocketAddr,
-    period: u32,
-    network: Arc<Mutex<Network>>,
-    event_queue: EventQueue<NetEvent>,
-    connect: Option<String>,
+/// Structure of a node
+pub struct Node {
+    /// List of peers of the current node
+    pub peers: Arc<Mutex<NodeMap>>,
+    /// Public address of the node
+    pub node_addr: SocketAddr,
+    /// Sets the duration (in seconds) of 
+    /// emitting messages to other peers
+    pub duration: u32,
+    /// Network of nodes
+    pub network: Arc<Mutex<Network>>,
+    /// Network events queue
+    pub event_queue: EventQueue<NetEvent>,
+    /// Sets the optional peer address to connect to
+    pub connection: Option<String>,
 }
 
-impl Peer {
-    pub fn new(port: u32, period: u32, connect: Option<String>) -> Result<Self, String> {
+impl Node {
+    /// Creates a new node
+    pub fn new(port: u32, duration: u32, connection: Option<String>) -> Result<Self, String> {
         let (mut network, event_queue) = Network::split();
 
-        // Listening own addr
-        let listen_addr = format!("127.0.0.1:{}", port);
-        match network.listen(Transport::FramedTcp, &listen_addr) {
+        // Node's own listening address (localhost + port)
+        let listening_addr = format!("127.0.0.1:{}", port);
+        match network.listen(Transport::FramedTcp, &listening_addr) {
             Ok((_, addr)) => {
                 log_my_address(&addr);
 
                 Ok(Self {
-                    event_queue,
+                    peers: Arc::new(Mutex::new(NodeMap::new(addr))),
+                    node_addr: addr,
+                    duration,
                     network: Arc::new(Mutex::new(network)),
-                    period,
-                    connect,
-                    public_addr: addr,
-                    peers: Arc::new(Mutex::new(PeersMap::new(addr))),
+                    event_queue,
+                    connection,
                 })
             }
-            Err(_) => Err(format!("Can not listen on {}", listen_addr)),
+            Err(_) => Err(format!("Cannot listen on {}", listening_addr)),
         }
     }
 
-    pub fn run(mut self) {
-        if let Some(addr) = &self.connect {
+    /// Executes the peer-to-peer process
+    pub fn execute(mut self) {
+        if let Some(addr) = &self.connection {
             let mut network = self.network.lock().unwrap();
 
             // Connection to the first peer
             match network.connect(Transport::FramedTcp, addr) {
                 Ok((endpoint, _)) => {
                     {
-                        let mut peers = self.peers.lock().unwrap();
-                        peers.add_old_one(endpoint);
+                        let mut nodes = self.peers.lock().unwrap();
+                        nodes.add_old_one(endpoint);
                     }
 
-                    // Передаю свой публичный адрес
                     send_message(
                         &mut network,
                         endpoint,
-                        &Message::MyPubAddr(self.public_addr.clone()),
+                        &Message::MyPubAddr(self.node_addr.clone()),
                     );
 
                     // Request a list of existing peers
@@ -94,7 +105,7 @@ impl Peer {
                                 .iter()
                                 .filter_map(|x| {
                                     // Проверяю, чтобы не было себя
-                                    if x != &self.public_addr {
+                                    if x != &self.node_addr {
                                         Some(x)
                                     } else {
                                         None
@@ -111,15 +122,12 @@ impl Peer {
                                     continue;
                                 }
 
-                                // к каждому подключиться и послать свой публичный адрес
-                                // и запомнить
-
                                 // connecting to peer
                                 let (endpoint, _) =
                                     network.connect(Transport::FramedTcp, *peer).unwrap();
 
                                 // sending public address
-                                let msg = Message::MyPubAddr(self.public_addr);
+                                let msg = Message::MyPubAddr(self.node_addr);
                                 send_message(&mut network, endpoint, &msg);
 
                                 // saving peer
@@ -141,7 +149,7 @@ impl Peer {
                 NetEvent::Connected(_, _) => {}
                 NetEvent::Disconnected(endpoint) => {
                     let mut peers = self.peers.lock().unwrap();
-                    PeersMap::drop(&mut peers, endpoint);
+                    NodeMap::drop(&mut peers, endpoint);
                     // self.peers.drop(endpoint);
                 }
             }
@@ -149,7 +157,7 @@ impl Peer {
     }
 
     fn spawn_emit_loop(&self) {
-        let sleep_duration = Duration::from_secs(self.period as u64);
+        let sleep_duration = Duration::from_secs(*&self.duration as u64);
         let peers_mut = Arc::clone(&self.peers);
         let network_mut = Arc::clone(&self.network);
 
@@ -175,11 +183,11 @@ impl Peer {
                     &msg_text,
                     &receivers
                         .iter()
-                        .map(|PeerAddr { public, .. }| public)
+                        .map(|NodeAddr { public, .. }| public)
                         .collect(),
                 );
 
-                for PeerAddr { endpoint, .. } in receivers {
+                for NodeAddr { endpoint, .. } in receivers {
                     send_message(&mut network, endpoint, &msg);
                 }
             }

@@ -3,23 +3,23 @@ use std::collections::HashMap;
 use std::iter::Iterator;
 use std::net::SocketAddr;
 
-pub struct PeersMap {
-    map: HashMap<Endpoint, PeerInfo>,
+pub struct NodeMap {
+    map: HashMap<Endpoint, NodeInfo>,
     self_pub_addr: SocketAddr,
 }
 
-pub struct PeerAddr {
+pub struct NodeAddr {
     pub public: SocketAddr,
     pub endpoint: Endpoint,
 }
 
 // #[derive(Debug)]
-enum PeerInfo {
+enum NodeInfo {
     OldOne,
     NewOne(SocketAddr),
 }
 
-impl PeersMap {
+impl NodeMap {
     pub fn new(self_pub_addr: SocketAddr) -> Self {
         Self {
             map: HashMap::new(),
@@ -29,12 +29,12 @@ impl PeersMap {
 
     pub fn add_old_one(&mut self, endpoint: Endpoint) {
         // println!("add old one: {}", endpoint.addr());
-        self.map.insert(endpoint, PeerInfo::OldOne);
+        self.map.insert(endpoint, NodeInfo::OldOne);
     }
 
     pub fn add_new_one(&mut self, endpoint: Endpoint, pub_addr: SocketAddr) {
         // println!("add new one: {} ({})", endpoint.addr(), pub_addr);
-        self.map.insert(endpoint, PeerInfo::NewOne(pub_addr));
+        self.map.insert(endpoint, NodeInfo::NewOne(pub_addr));
     }
 
     pub fn drop(&mut self, endpoint: Endpoint) {
@@ -48,8 +48,8 @@ impl PeersMap {
         self.map
             .iter()
             .map(|(endpoint, info)| match info {
-                PeerInfo::OldOne => endpoint.addr(),
-                PeerInfo::NewOne(public_addr) => public_addr.clone(),
+                NodeInfo::OldOne => endpoint.addr(),
+                NodeInfo::NewOne(public_addr) => public_addr.clone(),
             })
             .for_each(|addr| {
                 list.push(addr);
@@ -58,15 +58,15 @@ impl PeersMap {
         list
     }
 
-    pub fn receivers(&self) -> Vec<PeerAddr> {
+    pub fn receivers(&self) -> Vec<NodeAddr> {
         self.map
             .iter()
             .map(|(endpoint, info)| {
                 let public = match info {
-                    PeerInfo::OldOne => endpoint.addr(),
-                    PeerInfo::NewOne(public_addr) => public_addr.clone(),
+                    NodeInfo::OldOne => endpoint.addr(),
+                    NodeInfo::NewOne(public_addr) => public_addr.clone(),
                 };
-                PeerAddr {
+                NodeAddr {
                     endpoint: endpoint.clone(),
                     public,
                 }
@@ -76,8 +76,8 @@ impl PeersMap {
 
     pub fn get_pub_addr(&self, endpoint: &Endpoint) -> Option<SocketAddr> {
         self.map.get(endpoint).map(|founded| match founded {
-            PeerInfo::OldOne => endpoint.addr(),
-            PeerInfo::NewOne(addr) => addr.clone(),
+            NodeInfo::OldOne => endpoint.addr(),
+            NodeInfo::NewOne(addr) => addr.clone(),
         })
     }
 }
