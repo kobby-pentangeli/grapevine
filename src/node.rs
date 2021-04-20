@@ -16,7 +16,7 @@ pub struct Node {
     pub peers: Arc<Mutex<NodeMap>>,
     /// Public address of the node
     pub node_addr: SocketAddr,
-    /// Sets the duration (in seconds) of 
+    /// Sets the duration (in seconds) of
     /// emitting messages to other peers
     pub duration: u32,
     /// Network of nodes
@@ -87,9 +87,12 @@ impl Node {
             match self.event_queue.receive() {
                 // Waiting events
                 NetEvent::Message(message_sender, input_data) => {
-                    match bincode::deserialize(&input_data).expect("Failed to deserialize input data") {
+                    match bincode::deserialize(&input_data)
+                        .expect("Failed to deserialize input data")
+                    {
                         Message::RetrievePubAddr(pub_addr) => {
-                            let mut peers = self.peers.lock().expect("Error in retrieving peer list");
+                            let mut peers =
+                                self.peers.lock().expect("Error in retrieving peer list");
                             peers.add_new_one(message_sender, pub_addr);
                         }
                         Message::RetrievePeerList => {
@@ -98,19 +101,16 @@ impl Node {
                                 peers.get_peers_list()
                             };
                             let msg = Message::RespondToListQuery(list);
-                            send_message(&mut self.network.lock().expect("Error in sending message"), message_sender, &msg);
+                            send_message(
+                                &mut self.network.lock().expect("Error in sending message"),
+                                message_sender,
+                                &msg,
+                            );
                         }
                         Message::RespondToListQuery(addrs) => {
                             let filtered: Vec<&SocketAddr> = addrs
                                 .iter()
-                                .filter_map(|x| {
-                                    // Проверяю, чтобы не было себя
-                                    if x != &self.node_addr {
-                                        Some(x)
-                                    } else {
-                                        None
-                                    }
-                                })
+                                .filter_map(|x| if x != &self.node_addr { Some(x) } else { None })
                                 .collect();
 
                             log_connected_to_the_peers(&filtered);
@@ -123,16 +123,19 @@ impl Node {
                                 }
 
                                 // connecting to peer
-                                let (endpoint, _) =
-                                    network.connect(Transport::FramedTcp, *peer).expect("Error in connecting to peer");
+                                let (endpoint, _) = network
+                                    .connect(Transport::FramedTcp, *peer)
+                                    .expect("Error in connecting to peer");
 
                                 // sending public address
                                 let msg = Message::RetrievePubAddr(self.node_addr);
                                 send_message(&mut network, endpoint, &msg);
 
                                 // saving peer
-                                self.peers.lock().expect("Error in saving peer").add_old_one(endpoint);
-                                // self.peers.add_old_one(endpoint);
+                                self.peers
+                                    .lock()
+                                    .expect("Error in saving peer")
+                                    .add_old_one(endpoint);
                             }
                         }
                         Message::RequestRandomInfo(text) => {
@@ -150,7 +153,6 @@ impl Node {
                 NetEvent::Disconnected(endpoint) => {
                     let mut peers = self.peers.lock().expect("Unable to fetch peer list");
                     NodeMap::drop(&mut peers, endpoint);
-                    // self.peers.drop(endpoint);
                 }
             }
         }
