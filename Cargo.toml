@@ -1,10 +1,13 @@
 [package]
 name = "grapevine"
 version = "0.1.0"
-description = "A simple peer-to-peer gossip protocol handler"
+description = "Peer-to-peer gossip protocol handler"
 authors = ["Kobby Pentangeli <kobbypentangeli@gmail.com>"]
-license = "MIT"
-edition = "2018"
+repository = "https://github.com/kobby-pentangeli/grapevine"
+readme = "README.md"
+keywords = ["p2p", "peer-to-peer", "gossip"]
+categories = ["network programming"]
+edition = "2021"
 
 [dependencies]
 clap = "2.33.3"

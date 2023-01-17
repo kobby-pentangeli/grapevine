@@ -1,5 +1,5 @@
-use grapevine::{logger, node};
 use clap::{value_t, App, Arg};
+use grapevine::{logger, node};
 use node::Node;
 
 fn main() {

@@ -67,7 +67,7 @@ impl Node {
                     send_message(
                         &mut network,
                         endpoint,
-                        &Message::RetrievePubAddr(self.node_addr.clone()),
+                        &Message::RetrievePubAddr(self.node_addr),
                     );
 
                     // Request a list of existing peers
@@ -108,10 +108,8 @@ impl Node {
                             );
                         }
                         Message::RespondToListQuery(addrs) => {
-                            let filtered: Vec<&SocketAddr> = addrs
-                                .iter()
-                                .filter_map(|x| if x != &self.node_addr { Some(x) } else { None })
-                                .collect();
+                            let filtered: Vec<&SocketAddr> =
+                                addrs.iter().filter(|x| *x != &self.node_addr).collect();
 
                             log_connected_to_the_peers(&filtered);
 
@@ -159,7 +157,7 @@ impl Node {
     }
 
     fn spawn_emit_loop(&self) {
-        let sleep_duration = Duration::from_secs(*&self.duration as u64);
+        let sleep_duration = Duration::from_secs(self.duration as u64);
         let peers_mut = Arc::clone(&self.peers);
         let network_mut = Arc::clone(&self.network);
 
@@ -172,7 +170,7 @@ impl Node {
                 let receivers = peers.fetch_receivers();
 
                 // if there are no receivers, skip
-                if receivers.len() == 0 {
+                if receivers.is_empty() {
                     continue;
                 }
 
@@ -224,18 +222,18 @@ impl ToSocketAddr for &Endpoint {
 
 impl ToSocketAddr for SocketAddr {
     fn get_addr(&self) -> SocketAddr {
-        self.clone()
+        *self
     }
 }
 
 impl ToSocketAddr for &SocketAddr {
     fn get_addr(&self) -> SocketAddr {
-        *self.clone()
+        **self
     }
 }
 
 fn format_list_of_addrs<T: ToSocketAddr>(items: &Vec<T>) -> String {
-    if items.len() == 0 {
+    if items.is_empty() {
         "[no one]".to_owned()
     } else {
         let joined = items

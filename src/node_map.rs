@@ -60,7 +60,7 @@ impl NodeMap {
             .iter()
             .map(|(endpoint, info)| match info {
                 NodeInfo::OldInfo => endpoint.addr(),
-                NodeInfo::NewInfo(public_addr) => public_addr.clone(),
+                NodeInfo::NewInfo(public_addr) => *public_addr,
             })
             .for_each(|addr| {
                 list.push(addr);
@@ -76,10 +76,10 @@ impl NodeMap {
             .map(|(endpoint, info)| {
                 let public = match info {
                     NodeInfo::OldInfo => endpoint.addr(),
-                    NodeInfo::NewInfo(public_addr) => public_addr.clone(),
+                    NodeInfo::NewInfo(public_addr) => *public_addr,
                 };
                 NodeAddr {
-                    endpoint: endpoint.clone(),
+                    endpoint: *endpoint,
                     public,
                 }
             })
@@ -90,7 +90,7 @@ impl NodeMap {
     pub fn get_pub_addr(&self, endpoint: &Endpoint) -> Option<SocketAddr> {
         self.map.get(endpoint).map(|founded| match founded {
             NodeInfo::OldInfo => endpoint.addr(),
-            NodeInfo::NewInfo(addr) => addr.clone(),
+            NodeInfo::NewInfo(addr) => *addr,
         })
     }
 }

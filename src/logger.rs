@@ -11,7 +11,8 @@ impl log::Log for Logger {
 
     fn log(&self, record: &Record) {
         let execution_starts_at: Option<Instant> = None;
-        let elapsed = Instant::now().duration_since(execution_starts_at.expect("Failed to fetch elapsed time"));
+        let elapsed = Instant::now()
+            .duration_since(execution_starts_at.expect("Failed to fetch elapsed time"));
 
         println!("{} {:?}", elapsed.hhmmss(), record.args());
     }
@@ -23,7 +24,7 @@ impl log::Log for Logger {
 pub fn init() {
     let execution_starts_at = Some(Instant::now());
     println!("Execution starts at {:?}", execution_starts_at);
-    
+
     log::set_logger(&Logger)
         .map(|()| log::set_max_level(LevelFilter::Info))
         .expect("Failed to log");
