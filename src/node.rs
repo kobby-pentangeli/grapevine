@@ -1,13 +1,15 @@
 //! Functionality of a node in the p2p network
 
 use crate::connection::{Message, NodeAddr, NodeMap};
-use log::info;
-use message_io::events::EventQueue;
-use message_io::network::{Endpoint, NetEvent, Network, Transport};
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use message_io::{
+    events::EventQueue,
+    network::{Endpoint, NetEvent, Network, Transport},
+};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 /// Structure of a node
 pub struct Node {
@@ -162,10 +164,10 @@ impl Node {
         let peers_mut = Arc::clone(&self.connections);
         let network_mut = Arc::clone(&self.network);
 
-        thread::spawn(move || {
+        std::thread::spawn(move || {
             // sleeping and sending
             loop {
-                thread::sleep(sleep_duration);
+                std::thread::sleep(sleep_duration);
 
                 let peers = peers_mut.lock().expect("Unable to lock peers");
                 let receivers = peers.fetch_receivers();
@@ -248,7 +250,7 @@ fn format_list_of_addrs<T: ToSocketAddr>(items: &Vec<T>) -> String {
 }
 
 fn log_message_received<T: ToSocketAddr>(from: &T, text: &str) {
-    info!(
+    log::info!(
         "Received message [{}] from \"{}\"",
         text,
         ToSocketAddr::get_addr(from)
@@ -256,15 +258,15 @@ fn log_message_received<T: ToSocketAddr>(from: &T, text: &str) {
 }
 
 fn log_my_address<T: ToSocketAddr>(addr: &T) {
-    info!("My address is \"{}\"", ToSocketAddr::get_addr(addr));
+    log::info!("My address is \"{}\"", ToSocketAddr::get_addr(addr));
 }
 
 fn log_connected_to_the_peers<T: ToSocketAddr>(peers: &Vec<T>) {
-    info!("Connected to the peers at {}", format_list_of_addrs(peers));
+    log::info!("Connected to the peers at {}", format_list_of_addrs(peers));
 }
 
 fn log_sending_message<T: ToSocketAddr>(message: &str, receivers: &Vec<T>) {
-    info!(
+    log::info!(
         "Sending message [{}] to {}",
         message,
         format_list_of_addrs(receivers)

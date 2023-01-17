@@ -1,11 +1,9 @@
 use message_io::network::Endpoint;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::iter::Iterator;
-use std::net::SocketAddr;
+use std::{collections::HashMap, iter::Iterator, net::SocketAddr};
 
 /// Types of p2p messages
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
     /// Peer's public address
     RetrievePubAddr(SocketAddr),
