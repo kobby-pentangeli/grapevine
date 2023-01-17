@@ -33,11 +33,9 @@
     unused_qualifications
 )]
 
+/// Connection information about peers
+pub mod connection;
 /// Utility for testing
 pub mod logger;
-/// Peer-to-peer messages
-pub mod message;
 /// Functionality of a peer-to-peer node in the network
 pub mod node;
-/// Map of peers
-pub mod node_map;

@@ -1,7 +1,6 @@
 //! Functionality of a node in the p2p network
 
-use crate::message::Message;
-use crate::node_map::{NodeAddr, NodeMap};
+use crate::connection::{Message, NodeAddr, NodeMap};
 use log::info;
 use message_io::events::EventQueue;
 use message_io::network::{Endpoint, NetEvent, Network, Transport};
@@ -91,8 +90,10 @@ impl Node {
                         .expect("Failed to deserialize input data")
                     {
                         Message::RetrievePubAddr(pub_addr) => {
-                            let mut peers =
-                                self.connections.lock().expect("Error in retrieving peer list");
+                            let mut peers = self
+                                .connections
+                                .lock()
+                                .expect("Error in retrieving peer list");
                             peers.add_new_one(message_sender, pub_addr);
                         }
                         Message::RetrievePeerList => {

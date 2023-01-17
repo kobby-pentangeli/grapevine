@@ -1,9 +1,21 @@
-//! Functionality for map of peers and related information
-
 use message_io::network::Endpoint;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::iter::Iterator;
 use std::net::SocketAddr;
+
+/// Types of p2p messages
+#[derive(Serialize, Deserialize)]
+pub enum Message {
+    /// Peer's public address
+    RetrievePubAddr(SocketAddr),
+    /// Request for list of peers
+    RetrievePeerList,
+    /// Response for RetrievePeerList with peers info
+    RespondToListQuery(Vec<SocketAddr>),
+    /// Some random message
+    RequestRandomInfo(String),
+}
 
 /// Structure of the map of peers in the network
 pub struct NodeMap {

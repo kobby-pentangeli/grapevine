@@ -1,6 +1,5 @@
 use clap::{arg, value_parser, Command};
-use grapevine::{logger, node};
-use node::Node;
+use grapevine::{logger, node::Node};
 
 fn main() {
     let matches = Command::new("Grapevine")
