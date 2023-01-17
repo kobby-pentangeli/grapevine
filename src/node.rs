@@ -13,7 +13,7 @@ use std::time::Duration;
 /// Structure of a node
 pub struct Node {
     /// List of peers of the current node
-    pub peers: Arc<Mutex<NodeMap>>,
+    pub connections: Arc<Mutex<NodeMap>>,
     /// Public address of the node
     pub node_addr: SocketAddr,
     /// Sets the duration (in seconds) of
@@ -24,12 +24,12 @@ pub struct Node {
     /// Network events queue
     pub event_queue: EventQueue<NetEvent>,
     /// Sets the optional peer address to connect to
-    pub connection: Option<String>,
+    pub peer: Option<String>,
 }
 
 impl Node {
     /// Creates a new node
-    pub fn new(port: u32, duration: u32, connection: Option<String>) -> Result<Self, String> {
+    pub fn new(port: u32, duration: u32, peer: Option<String>) -> Result<Self, String> {
         let (mut network, event_queue) = Network::split();
 
         // Node's own listening address (localhost + port)
@@ -39,12 +39,12 @@ impl Node {
                 log_my_address(&addr);
 
                 Ok(Self {
-                    peers: Arc::new(Mutex::new(NodeMap::new(addr))),
+                    connections: Arc::new(Mutex::new(NodeMap::new(addr))),
                     node_addr: addr,
                     duration,
                     network: Arc::new(Mutex::new(network)),
                     event_queue,
-                    connection,
+                    peer,
                 })
             }
             Err(_) => Err(format!("Cannot listen on {}", listening_addr)),
@@ -53,14 +53,14 @@ impl Node {
 
     /// Executes the peer-to-peer process
     pub fn execute(mut self) {
-        if let Some(addr) = &self.connection {
+        if let Some(addr) = &self.peer {
             let mut network = self.network.lock().expect("Failed to lock network");
 
             // Connection to the first peer
             match network.connect(Transport::FramedTcp, addr) {
                 Ok((endpoint, _)) => {
                     {
-                        let mut nodes = self.peers.lock().expect("Unable to fetch peer list");
+                        let mut nodes = self.connections.lock().expect("Unable to fetch peer list");
                         nodes.add_old_one(endpoint);
                     }
 
@@ -92,12 +92,12 @@ impl Node {
                     {
                         Message::RetrievePubAddr(pub_addr) => {
                             let mut peers =
-                                self.peers.lock().expect("Error in retrieving peer list");
+                                self.connections.lock().expect("Error in retrieving peer list");
                             peers.add_new_one(message_sender, pub_addr);
                         }
                         Message::RetrievePeerList => {
                             let list = {
-                                let peers = self.peers.lock().expect("Unable to fetch peers");
+                                let peers = self.connections.lock().expect("Unable to fetch peers");
                                 peers.get_peers_list()
                             };
                             let msg = Message::RespondToListQuery(list);
@@ -130,7 +130,7 @@ impl Node {
                                 send_message(&mut network, endpoint, &msg);
 
                                 // saving peer
-                                self.peers
+                                self.connections
                                     .lock()
                                     .expect("Error in saving peer")
                                     .add_old_one(endpoint);
@@ -138,7 +138,7 @@ impl Node {
                         }
                         Message::RequestRandomInfo(text) => {
                             let pub_addr = self
-                                .peers
+                                .connections
                                 .lock()
                                 .expect("Error in fetching peers")
                                 .get_pub_addr(&message_sender)
@@ -149,7 +149,7 @@ impl Node {
                 }
                 NetEvent::Connected(_, _) => {}
                 NetEvent::Disconnected(endpoint) => {
-                    let mut peers = self.peers.lock().expect("Unable to fetch peer list");
+                    let mut peers = self.connections.lock().expect("Unable to fetch peer list");
                     NodeMap::drop(&mut peers, endpoint);
                 }
             }
@@ -158,7 +158,7 @@ impl Node {
 
     fn spawn_emit_loop(&self) {
         let sleep_duration = Duration::from_secs(self.duration as u64);
-        let peers_mut = Arc::clone(&self.peers);
+        let peers_mut = Arc::clone(&self.connections);
         let network_mut = Arc::clone(&self.network);
 
         thread::spawn(move || {

@@ -14,7 +14,7 @@ fn main() {
             arg!(-d --duration <DURATION> "Sets the duration (in seconds) of emitting messages to other peers.\n   Example: --duration 5")
                 .value_parser(value_parser!(u32))
                 .required(true),
-            arg!(-c --connection <CONNECTION> "Sets the optional peer address to connect to.\n   Example: --connection 127.0.0.1:8000")
+            arg!(--peer <PEER> "Sets the optional peer address to connect to.\n   Example: --peer 127.0.0.1:8000")
                 .value_parser(value_parser!(String))
                 .required(false),
         ])
@@ -24,11 +24,11 @@ fn main() {
     let duration = matches
         .get_one::<u32>("duration")
         .expect("Duration not specified");
-    let connection = matches.get_one::<String>("connection");
+    let peer = matches.get_one::<String>("peer");
 
     logger::init();
 
-    Node::new(*port, *duration, connection.cloned())
+    Node::new(*port, *duration, peer.cloned())
         .unwrap()
         .execute();
 }
