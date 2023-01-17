@@ -7,7 +7,7 @@ A simple peer-to-peer gossip protocol handler
 Using Cargo, pass the necessary command-line args after `--`, like the following:
 
 ```rust
-cargo run -- --duration 5 --port 8000
+cargo run -- --duration 5 --port 8000 --connection 127.0.0.1:8000
 ```
 
 ## Usage
