@@ -1,4 +1,4 @@
-# Ananse
+# Grapevine
 
 A simple peer-to-peer gossip protocol handler
 
@@ -15,13 +15,13 @@ cargo run -- --duration 5 --port 8000
 ```rust
 $ cargo run -- --help
     Finished dev [unoptimized + debuginfo] target(s) in 0.11s
-     Running `target/debug/ananse -h`
-ananse v0.1.0
+     Running `target/debug/grapevine -h`
+grapevine v0.1.0
 Kobby Pentangeli <kobbypentangeli@gmail.com>
 A simple peer-to-peer gossip protocol handler
 
 USAGE:
-    ananse [OPTIONS] --duration <duration> --port <port>
+    grapevine [OPTIONS] --duration <duration> --port <port>
 
 FLAGS:
     -h, --help       Prints help information

@@ -1,10 +1,9 @@
-use ananse::{logger, node};
-
+use grapevine::{logger, node};
 use clap::{value_t, App, Arg};
 use node::Node;
 
 fn main() {
-    let arg_matches = App::new("Ananse")
+    let arg_matches = App::new("Grapevine")
         .version("0.1.0")
         .author("Kobby Pentangeli <kobbypentangeli@gmail.com>")
         .about("A simple peer-to-peer gossip protocol handler")

@@ -1,4 +1,4 @@
-//! *** Ananse - A simple peer-to-peer gossip protocol handler ***
+//! *** Grapevine - A simple peer-to-peer gossip protocol handler ***
 
 #![forbid(
     arithmetic_overflow,

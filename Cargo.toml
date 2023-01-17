@@ -1,12 +1,10 @@
 [package]
-name = "ananse"
+name = "grapevine"
 version = "0.1.0"
 description = "A simple peer-to-peer gossip protocol handler"
 authors = ["Kobby Pentangeli <kobbypentangeli@gmail.com>"]
 license = "MIT"
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 clap = "2.33.3"
