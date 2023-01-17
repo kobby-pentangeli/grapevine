@@ -20,18 +20,17 @@ grapevine v0.1.0
 Kobby Pentangeli <kobbypentangeli@gmail.com>
 A simple peer-to-peer gossip protocol handler
 
-USAGE:
-    grapevine [OPTIONS] --duration <duration> --port <port>
+Usage: main --port <PORT> --duration <DURATION> [connection]...
 
-FLAGS:
-    -h, --help       Prints help information
-    -V, --version    Prints version information
+Arguments:
+  [connection]...  Sets the optional peer address to connect to.
+                      Example: --connection 127.0.0.1:8000
 
-OPTIONS:
-        --connection <connection>    Sets the optional peer address to connect to.
-                                  Example: --connection 127.0.0.1:8000
-        --duration <duration>        Sets the duration (in seconds) of emitting messages to other peers.
-                                  Example: --duration 5
-        --port <port>                Sets the port to listen to.
-                                  Example: --port 8000
+Options:
+  -p, --port <PORT>          Sets the port to listen to.
+                                Example: --port 8000
+  -d, --duration <DURATION>  Sets the duration (in seconds) of emitting messages to other peers.
+                                Example: --duration 5
+  -h, --help                 Print help
+  -V, --version              Print version
 ```

@@ -10,7 +10,7 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &Record) {
-        let execution_starts_at: Option<Instant> = None;
+        let execution_starts_at = Some(Instant::now());
         let elapsed = Instant::now()
             .duration_since(execution_starts_at.expect("Failed to fetch elapsed time"));
 
