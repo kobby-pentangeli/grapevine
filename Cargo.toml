@@ -1,6 +1,6 @@
 [package]
 name = "grapevine"
-version = "0.1.1"
+version = "0.1.2"
 description = "A simple peer-to-peer gossip protocol handler"
 authors = ["Kobby Pentangeli <kobbypentangeli@gmail.com>"]
 repository = "https://github.com/kobby-pentangeli/grapevine"
