@@ -15,28 +15,27 @@ pub enum Message {
     RequestRandomInfo(String),
 }
 
+enum NodeInfo {
+    OldInfo,
+    NewInfo(SocketAddr),
+}
+
+/// Structure of a peer address
+pub struct NodeAddr {
+    /// Node's own public address
+    pub public: SocketAddr,
+    /// A peer's remote connection identity
+    pub endpoint: Endpoint,
+}
+
 /// Structure of the map of peers in the network
 pub struct NodeMap {
     map: HashMap<Endpoint, NodeInfo>,
     self_pub_addr: SocketAddr,
 }
 
-/// Structure of a peer address
-pub struct NodeAddr {
-    /// Public address
-    pub public: SocketAddr,
-    /// SendTo address
-    pub endpoint: Endpoint,
-}
-
-/// Information on a peer
-enum NodeInfo {
-    OldInfo,
-    NewInfo(SocketAddr),
-}
-
 impl NodeMap {
-    /// Generates a new node map
+    /// Creates a new `NodeMap`
     pub fn new(self_pub_addr: SocketAddr) -> Self {
         Self {
             map: HashMap::new(),
@@ -46,19 +45,16 @@ impl NodeMap {
 
     /// Adds an old info on the node
     pub fn add_old_one(&mut self, endpoint: Endpoint) {
-        // println!("add old one: {}", endpoint.addr());
         self.map.insert(endpoint, NodeInfo::OldInfo);
     }
 
     /// Adds a new info on the node
     pub fn add_new_one(&mut self, endpoint: Endpoint, pub_addr: SocketAddr) {
-        // println!("add new one: {} ({})", endpoint.addr(), pub_addr);
         self.map.insert(endpoint, NodeInfo::NewInfo(pub_addr));
     }
 
     /// Removes a node's endpoint from the map
     pub fn drop(&mut self, endpoint: Endpoint) {
-        // println!("drop: {}", endpoint.addr());
         self.map.remove(&endpoint);
     }
 
@@ -98,7 +94,7 @@ impl NodeMap {
 
     /// Retrieves the public address of the node
     pub fn get_pub_addr(&self, endpoint: &Endpoint) -> Option<SocketAddr> {
-        self.map.get(endpoint).map(|founded| match founded {
+        self.map.get(endpoint).map(|info| match info {
             NodeInfo::OldInfo => endpoint.addr(),
             NodeInfo::NewInfo(addr) => *addr,
         })

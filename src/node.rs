@@ -1,5 +1,3 @@
-//! Functionality of a node in the p2p network
-
 use crate::connection::{Message, NodeAddr, NodeMap};
 use message_io::{
     events::EventQueue,
@@ -29,7 +27,7 @@ pub struct Node {
 }
 
 impl Node {
-    /// Creates a new node
+    /// Creates a new `Node`
     pub fn new(port: u32, duration: u32, peer: Option<String>) -> Result<Self, String> {
         let (mut network, event_queue) = Network::split();
 
@@ -52,7 +50,7 @@ impl Node {
         }
     }
 
-    /// Executes the peer-to-peer process
+    /// Executes the peer-to-peer process.
     pub fn execute(mut self) {
         if let Some(addr) = &self.peer {
             let mut network = self.network.lock().expect("Failed to lock network");
