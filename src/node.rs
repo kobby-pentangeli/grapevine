@@ -1,4 +1,7 @@
-use crate::connection::{Message, NodeAddr, NodeMap};
+use crate::{
+    connection::{Message, NodeAddr, NodeMap},
+    error::Error,
+};
 use message_io::{
     events::EventQueue,
     network::{Endpoint, NetEvent, Network, Transport},
@@ -28,7 +31,7 @@ pub struct Node {
 
 impl Node {
     /// Creates a new `Node`
-    pub fn new(port: u32, duration: u32, peer: Option<String>) -> Result<Self, String> {
+    pub fn new(port: u32, duration: u32, peer: Option<String>) -> Result<Self, Error> {
         let (mut network, event_queue) = Network::split();
 
         // Node's own listening address (localhost + port)
@@ -46,20 +49,29 @@ impl Node {
                     peer,
                 })
             }
-            Err(_) => Err(format!("Cannot listen on {}", listening_addr)),
+            Err(e) => Err(Error::NetworkListeningError(format!(
+                "{}: {}",
+                e, listening_addr
+            ))),
         }
     }
 
     /// Executes the peer-to-peer process.
-    pub fn execute(mut self) {
+    pub fn execute(mut self) -> Result<(), Error> {
         if let Some(addr) = &self.peer {
-            let mut network = self.network.lock().expect("Failed to lock network");
+            let mut network = self
+                .network
+                .lock()
+                .map_err(|e| Error::NetworkLockError(e.to_string()))?;
 
             // Connection to the first peer
             match network.connect(Transport::FramedTcp, addr) {
                 Ok((endpoint, _)) => {
                     {
-                        let mut nodes = self.connections.lock().expect("Unable to fetch peer list");
+                        let mut nodes = self
+                            .connections
+                            .lock()
+                            .map_err(|e| Error::ConnectionsFetchError(e.to_string()))?;
                         nodes.add_old_one(endpoint);
                     }
 
@@ -67,97 +79,28 @@ impl Node {
                         &mut network,
                         endpoint,
                         &Message::RetrievePubAddr(self.node_addr),
-                    );
+                    )?;
 
                     // Request a list of existing peers
                     // Response will be in event queue
-                    send_message(&mut network, endpoint, &Message::RetrievePeerList);
+                    send_message(&mut network, endpoint, &Message::RetrievePeerList)?;
                 }
-                Err(_) => {
-                    println!("Failed to connect to {}", &addr);
-                }
-            }
-        }
-
-        // spawning thread which will be send random messages to known peers
-        self.spawn_emit_loop();
-
-        loop {
-            match self.event_queue.receive() {
-                // Waiting events
-                NetEvent::Message(message_sender, input_data) => {
-                    match bincode::deserialize(&input_data)
-                        .expect("Failed to deserialize input data")
-                    {
-                        Message::RetrievePubAddr(pub_addr) => {
-                            let mut peers = self
-                                .connections
-                                .lock()
-                                .expect("Error in retrieving peer list");
-                            peers.add_new_one(message_sender, pub_addr);
-                        }
-                        Message::RetrievePeerList => {
-                            let list = {
-                                let peers = self.connections.lock().expect("Unable to fetch peers");
-                                peers.get_peers_list()
-                            };
-                            let msg = Message::RespondToListQuery(list);
-                            send_message(
-                                &mut self.network.lock().expect("Error in sending message"),
-                                message_sender,
-                                &msg,
-                            );
-                        }
-                        Message::RespondToListQuery(addrs) => {
-                            let filtered: Vec<&SocketAddr> =
-                                addrs.iter().filter(|x| *x != &self.node_addr).collect();
-
-                            log_connected_to_the_peers(&filtered);
-
-                            let mut network = self.network.lock().expect("Unable to lock network");
-
-                            for peer in filtered {
-                                if peer == &message_sender.addr() {
-                                    continue;
-                                }
-
-                                // connecting to peer
-                                let (endpoint, _) = network
-                                    .connect(Transport::FramedTcp, *peer)
-                                    .expect("Error in connecting to peer");
-
-                                // sending public address
-                                let msg = Message::RetrievePubAddr(self.node_addr);
-                                send_message(&mut network, endpoint, &msg);
-
-                                // saving peer
-                                self.connections
-                                    .lock()
-                                    .expect("Error in saving peer")
-                                    .add_old_one(endpoint);
-                            }
-                        }
-                        Message::RequestRandomInfo(text) => {
-                            let pub_addr = self
-                                .connections
-                                .lock()
-                                .expect("Error in fetching peers")
-                                .get_pub_addr(&message_sender)
-                                .expect("Error in fetching public address");
-                            log_message_received(&pub_addr, &text);
-                        }
-                    }
-                }
-                NetEvent::Connected(_, _) => {}
-                NetEvent::Disconnected(endpoint) => {
-                    let mut peers = self.connections.lock().expect("Unable to fetch peer list");
-                    NodeMap::drop(&mut peers, endpoint);
+                Err(e) => {
+                    return Err(Error::NetworkConnectionError(format!("{}: {}", e, &addr)));
                 }
             }
         }
+
+        // spawn thread to send random messages to known peers
+        self.spawn_emit_loop()?;
+
+        // process messages
+        self.process_message()?;
+
+        Ok(())
     }
 
-    fn spawn_emit_loop(&self) {
+    fn spawn_emit_loop(&self) -> Result<(), Error> {
         let sleep_duration = Duration::from_secs(self.duration as u64);
         let peers_mut = Arc::clone(&self.connections);
         let network_mut = Arc::clone(&self.network);
@@ -167,7 +110,7 @@ impl Node {
             loop {
                 std::thread::sleep(sleep_duration);
 
-                let peers = peers_mut.lock().expect("Unable to lock peers");
+                let peers = peers_mut.lock().expect("Unable to obtain mutex on peers");
                 let receivers = peers.fetch_receivers();
 
                 // if there are no receivers, skip
@@ -189,16 +132,104 @@ impl Node {
                 );
 
                 for NodeAddr { endpoint, .. } in receivers {
-                    send_message(&mut network, endpoint, &msg);
+                    send_message(&mut network, endpoint, &msg).expect("Failed to send message");
                 }
             }
         });
+        Ok(())
+    }
+
+    fn process_message(&mut self) -> Result<(), Error> {
+        loop {
+            match self.event_queue.receive() {
+                // Waiting events
+                NetEvent::Message(message_sender, input_data) => {
+                    match bincode::deserialize(&input_data)
+                        .map_err(|e| Error::BincodeDeserializeError(e.to_string()))?
+                    {
+                        Message::RetrievePubAddr(pub_addr) => {
+                            let mut peers = self
+                                .connections
+                                .lock()
+                                .map_err(|e| Error::ConnectionsFetchError(e.to_string()))?;
+                            peers.add_new_one(message_sender, pub_addr);
+                        }
+                        Message::RetrievePeerList => {
+                            let list = {
+                                let peers = self
+                                    .connections
+                                    .lock()
+                                    .map_err(|e| Error::ConnectionsFetchError(e.to_string()))?;
+                                peers.get_peers_list()
+                            };
+                            let msg = Message::RespondToListQuery(list);
+                            send_message(
+                                &mut self.network.lock().expect("Error in sending message"),
+                                message_sender,
+                                &msg,
+                            )?;
+                        }
+                        Message::RespondToListQuery(addrs) => {
+                            let filtered: Vec<&SocketAddr> =
+                                addrs.iter().filter(|x| *x != &self.node_addr).collect();
+
+                            log_connected_to_the_peers(&filtered);
+
+                            let mut network = self
+                                .network
+                                .lock()
+                                .map_err(|e| Error::NetworkLockError(e.to_string()))?;
+
+                            for peer in filtered {
+                                if peer == &message_sender.addr() {
+                                    continue;
+                                }
+
+                                // connecting to peer
+                                let (endpoint, _) = network
+                                    .connect(Transport::FramedTcp, *peer)
+                                    .map_err(|e| Error::NetworkConnectionError(e.to_string()))?;
+
+                                // sending public address
+                                let msg = Message::RetrievePubAddr(self.node_addr);
+                                send_message(&mut network, endpoint, &msg)?;
+
+                                // saving peer
+                                self.connections
+                                    .lock()
+                                    .map_err(|e| Error::AddPeerError(e.to_string()))?
+                                    .add_old_one(endpoint);
+                            }
+                        }
+                        Message::RequestRandomInfo(text) => {
+                            let pub_addr = self
+                                .connections
+                                .lock()
+                                .map_err(|e| Error::ConnectionsFetchError(e.to_string()))?
+                                .get_pub_addr(&message_sender)
+                                .expect("Error in fetching public address");
+                            log_message_received(&pub_addr, &text);
+                        }
+                    }
+                }
+                NetEvent::Connected(_, _) => {}
+                NetEvent::Disconnected(endpoint) => {
+                    let mut peers = self
+                        .connections
+                        .lock()
+                        .map_err(|e| Error::ConnectionsFetchError(e.to_string()))?;
+                    NodeMap::drop(&mut peers, endpoint);
+                }
+            }
+        }
     }
 }
 
-fn send_message(network: &mut Network, to: Endpoint, msg: &Message) {
-    let output_data = bincode::serialize(msg).expect("Failed to serialize message");
+fn send_message(network: &mut Network, to: Endpoint, msg: &Message) -> Result<(), Error> {
+    let output_data =
+        bincode::serialize(msg).map_err(|e| Error::BincodeSerializeError(e.to_string()))?;
     network.send(to, &output_data);
+    Ok(())
 }
 
 fn generate_random_message() -> String {

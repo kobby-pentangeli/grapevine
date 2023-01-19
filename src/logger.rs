@@ -1,3 +1,4 @@
+use crate::error::Error;
 use hhmmss::Hhmmss;
 use log::{Level, LevelFilter, Metadata, Record};
 use std::time::Instant;
@@ -12,12 +13,15 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &Record) {
-        let execution_starts_at = Some(Instant::now());
-        let elapsed = Instant::now()
-            .duration_since(execution_starts_at.expect("Failed to fetch elapsed time"));
+        let execution_starts_at = Instant::now();
 
         if self.enabled(record.metadata()) {
-            println!("{} {} {}", elapsed.hhmmss(), record.level(), record.args());
+            println!(
+                "{} {} {}",
+                execution_starts_at.elapsed().hhmmss(),
+                record.level(),
+                record.args()
+            );
         }
     }
 
@@ -25,11 +29,12 @@ impl log::Log for Logger {
 }
 
 /// Initialize the Logger
-pub fn init() {
-    let execution_starts_at = Some(Instant::now());
+pub fn init() -> Result<(), Error> {
+    let execution_starts_at = Instant::now();
     println!("Execution starts at {:?}", execution_starts_at);
 
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(LevelFilter::Info))
-        .expect("Failed to log");
+        .map_err(|e| Error::LoggingError(e.to_string()))?;
+    Ok(())
 }

@@ -1,7 +1,7 @@
 use clap::{arg, value_parser, Command};
 use grapevine::{logger, node::Node};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = Command::new("Grapevine")
         .version("0.1.0")
         .author("Kobby Pentangeli <kobbypentangeli@gmail.com>")
@@ -25,9 +25,8 @@ fn main() {
         .expect("Duration not specified");
     let peer = matches.get_one::<String>("peer");
 
-    logger::init();
+    logger::init()?;
 
-    Node::new(*port, *duration, peer.cloned())
-        .unwrap()
-        .execute();
+    Node::new(*port, *duration, peer.cloned())?.execute()?;
+    Ok(())
 }

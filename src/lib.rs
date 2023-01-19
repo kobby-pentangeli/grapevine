@@ -35,6 +35,8 @@
 
 /// Connection information about peers
 pub mod connection;
+/// Error types
+pub mod error;
 /// Utility for testing
 pub mod logger;
 /// Functionality of a peer-to-peer node in the network
