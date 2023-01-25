@@ -1,6 +1,7 @@
 use crate::{
     connection::{Message, NodeAddr, NodeMap},
     error::Error,
+    Result,
 };
 use message_io::{
     events::EventQueue,
@@ -31,7 +32,7 @@ pub struct Node {
 
 impl Node {
     /// Creates a new `Node`
-    pub fn new(port: u32, duration: u32, peer: Option<String>) -> Result<Self, Error> {
+    pub fn new(port: u32, duration: u32, peer: Option<String>) -> Result<Self> {
         let (mut network, event_queue) = Network::split();
 
         // Node's own listening address (localhost + port)
@@ -57,7 +58,7 @@ impl Node {
     }
 
     /// Executes the peer-to-peer process.
-    pub fn execute(mut self) -> Result<(), Error> {
+    pub fn execute(mut self) -> Result<()> {
         if let Some(addr) = &self.peer {
             let mut network = self
                 .network
@@ -100,7 +101,7 @@ impl Node {
         Ok(())
     }
 
-    fn spawn_emit_loop(&self) -> Result<(), Error> {
+    fn spawn_emit_loop(&self) -> Result<()> {
         let sleep_duration = Duration::from_secs(self.duration as u64);
         let peers_mut = Arc::clone(&self.connections);
         let network_mut = Arc::clone(&self.network);
@@ -139,14 +140,12 @@ impl Node {
         Ok(())
     }
 
-    fn process_message(&mut self) -> Result<(), Error> {
+    fn process_message(&mut self) -> Result<()> {
         loop {
             match self.event_queue.receive() {
                 // Waiting events
                 NetEvent::Message(message_sender, input_data) => {
-                    match bincode::deserialize(&input_data)
-                        .map_err(|e| Error::BincodeDeserializeError(e.to_string()))?
-                    {
+                    match bincode::deserialize(&input_data)? {
                         Message::RetrievePubAddr(pub_addr) => {
                             let mut peers = self
                                 .connections
@@ -225,9 +224,8 @@ impl Node {
     }
 }
 
-fn send_message(network: &mut Network, to: Endpoint, msg: &Message) -> Result<(), Error> {
-    let output_data =
-        bincode::serialize(msg).map_err(|e| Error::BincodeSerializeError(e.to_string()))?;
+fn send_message(network: &mut Network, to: Endpoint, msg: &Message) -> Result<()> {
+    let output_data = bincode::serialize(msg)?;
     network.send(to, &output_data);
     Ok(())
 }

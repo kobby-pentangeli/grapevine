@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::Result;
 use hhmmss::Hhmmss;
 use log::{Level, LevelFilter, Metadata, Record};
 use std::time::Instant;
@@ -29,12 +29,10 @@ impl log::Log for Logger {
 }
 
 /// Initialize the Logger
-pub fn init() -> Result<(), Error> {
+pub fn init() -> Result<()> {
     let execution_starts_at = Instant::now();
     println!("Execution starts at {:?}", execution_starts_at);
 
-    log::set_logger(&LOGGER)
-        .map(|()| log::set_max_level(LevelFilter::Info))
-        .map_err(|e| Error::LoggingError(e.to_string()))?;
+    log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Info))?;
     Ok(())
 }

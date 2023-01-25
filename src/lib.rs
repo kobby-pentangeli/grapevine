@@ -41,3 +41,6 @@ pub mod error;
 pub mod logger;
 /// Functionality of a peer-to-peer node in the network
 pub mod node;
+
+/// Result wrapper
+pub type Result<T> = std::result::Result<T, error::Error>;

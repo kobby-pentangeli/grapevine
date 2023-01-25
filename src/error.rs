@@ -1,5 +1,5 @@
 /// Error types
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Error on calling `message_io::Network::listen()`
     #[error("{0}")]
@@ -17,13 +17,9 @@ pub enum Error {
     #[error("{0}")]
     NetworkConnectionError(String),
 
-    /// Error on deserializing input data
+    /// (De)serialization errors
     #[error("{0}")]
-    BincodeDeserializeError(String),
-
-    /// Error on serializing input data
-    #[error("{0}")]
-    BincodeSerializeError(String),
+    BincodeError(bincode::Error),
 
     /// Error on adding a peer to the peer list
     #[error("{0}")]
@@ -31,5 +27,17 @@ pub enum Error {
 
     /// Error on logging
     #[error("{0}")]
-    LoggingError(String),
+    LoggingError(log::SetLoggerError),
+}
+
+impl From<bincode::Error> for Error {
+    fn from(value: bincode::Error) -> Self {
+        Error::BincodeError(value)
+    }
+}
+
+impl From<log::SetLoggerError> for Error {
+    fn from(value: log::SetLoggerError) -> Self {
+        Error::LoggingError(value)
+    }
 }
