@@ -1,17 +1,14 @@
-use crate::{
-    connection::{Message, NodeAddr, NodeMap},
-    error::Error,
-    Result,
-};
-use message_io::{
-    events::EventQueue,
-    network::{Endpoint, NetEvent, Network, Transport},
-};
-use std::{
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use message_io::events::EventQueue;
+use message_io::network::{Endpoint, NetEvent, Network, Transport};
+use petname::Generator;
+
+use crate::Result;
+use crate::connection::{Message, NodeAddr, NodeMap};
+use crate::error::Error;
 
 /// Structure of a node
 pub struct Node {
@@ -231,7 +228,9 @@ fn send_message(network: &mut Network, to: Endpoint, msg: &Message) -> Result<()
 }
 
 fn generate_random_message() -> String {
-    petname::Petnames::default().generate_one(2, "-")
+    petname::Petnames::default()
+        .generate_one(2, "-")
+        .expect("Error generating petname")
 }
 
 trait ToSocketAddr {

@@ -1,7 +1,9 @@
-use crate::Result;
+use std::time::Instant;
+
 use hhmmss::Hhmmss;
 use log::{Level, LevelFilter, Metadata, Record};
-use std::time::Instant;
+
+use crate::Result;
 
 static LOGGER: Logger = Logger;
 

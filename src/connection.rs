@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+use std::iter::Iterator;
+use std::net::SocketAddr;
+
 use message_io::network::Endpoint;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, iter::Iterator, net::SocketAddr};
 
 /// Types of p2p messages
 #[derive(Debug, Clone, Serialize, Deserialize)]

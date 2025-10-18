@@ -1,0 +1,4 @@
+# Run with `cargo +nightly fmt`
+
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"

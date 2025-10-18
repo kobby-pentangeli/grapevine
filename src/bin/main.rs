@@ -1,5 +1,6 @@
-use clap::{arg, value_parser, Command};
-use grapevine::{logger, node::Node};
+use clap::{Command, arg, value_parser};
+use grapevine::logger;
+use grapevine::node::Node;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = Command::new("Grapevine")
