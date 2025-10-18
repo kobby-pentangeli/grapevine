@@ -33,7 +33,7 @@
     unused_qualifications
 )]
 
-/// Error types
+pub mod config;
 pub mod error;
 
 pub use error::{Error, Result};
