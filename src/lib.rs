@@ -1,4 +1,4 @@
-//! Grapevine - A simple peer-to-peer gossip protocol handler.
+//! Grapevine - A modern, asynchronous peer-to-peer gossip protocol library.
 
 #![forbid(
     arithmetic_overflow,
@@ -33,14 +33,7 @@
     unused_qualifications
 )]
 
-/// Connection information about peers
-pub mod connection;
 /// Error types
 pub mod error;
-/// Utility for testing
-pub mod logger;
-/// Functionality of a peer-to-peer node in the network
-pub mod node;
 
-/// Result wrapper
-pub type Result<T> = std::result::Result<T, error::Error>;
+pub use error::{Error, Result};
