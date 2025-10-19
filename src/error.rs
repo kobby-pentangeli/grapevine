@@ -34,9 +34,13 @@ pub enum Error {
         source: io::Error,
     },
 
-    /// (De)serialization errors.
-    #[error("(De)serialization error: {0}")]
+    /// Serialization error.
+    #[error("Serialization error: {0}")]
     Serialization(#[from] bincode::Error),
+
+    /// Deserialization error.
+    #[error("Deserialization failed: {0}")]
+    Deserialization(String),
 
     /// Invalid configuration.
     #[error("Invalid configuration: {0}")]

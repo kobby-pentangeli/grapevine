@@ -33,6 +33,7 @@
     unused_qualifications
 )]
 
+pub mod codec;
 pub mod config;
 pub mod core;
 pub mod error;
