@@ -1,0 +1,159 @@
+//! Message types for gossip protocol.
+
+use std::fmt;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+
+static MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Unique identifier for a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MessageId {
+    /// Origin node address
+    pub origin: SocketAddr,
+    /// Sequence number
+    pub sequence: u64,
+    /// Timestamp (milliseconds since epoch)
+    pub timestamp: u64,
+}
+
+impl MessageId {
+    /// Create a new message ID.
+    pub fn new(origin: SocketAddr) -> Self {
+        let sequence = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as u64;
+
+        Self {
+            origin,
+            sequence,
+            timestamp,
+        }
+    }
+}
+
+impl fmt::Display for MessageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}:{}", self.origin, self.sequence, self.timestamp)
+    }
+}
+
+/// The main gossip message structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    /// Unique message identifier
+    pub id: MessageId,
+
+    /// Time-to-live (hop count)
+    pub ttl: u8,
+
+    /// Message payload
+    pub payload: Payload,
+
+    /// Signature (if crypto feature enabled)
+    #[cfg(feature = "crypto")]
+    pub signature: Option<Vec<u8>>,
+}
+
+impl Message {
+    /// Create a new gossip message.
+    pub fn new(origin: SocketAddr, payload: Payload) -> Self {
+        Self {
+            id: MessageId::new(origin),
+            ttl: 10, // Default TTL
+            payload,
+            #[cfg(feature = "crypto")]
+            signature: None,
+        }
+    }
+
+    /// Create with custom TTL.
+    pub fn with_ttl(origin: SocketAddr, payload: Payload, ttl: u8) -> Self {
+        Self {
+            id: MessageId::new(origin),
+            ttl,
+            payload,
+            #[cfg(feature = "crypto")]
+            signature: None,
+        }
+    }
+
+    /// Decrement TTL and check if message should be propagated.
+    pub fn decrement_ttl(&mut self) -> bool {
+        if self.ttl > 0 {
+            self.ttl -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Message payload variants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum Payload {
+    /// User-defined application data
+    Application(Bytes),
+
+    /// Peer discovery request
+    PeerDiscovery,
+
+    /// Peer list announcement
+    PeerAnnouncement {
+        /// List of known peers
+        peers: Vec<SocketAddr>,
+    },
+
+    /// Heartbeat/keep-alive
+    Heartbeat {
+        /// Sender's address
+        from: SocketAddr,
+    },
+
+    /// Request for peer list
+    PeerListRequest,
+
+    /// Response with peer list
+    PeerListResponse {
+        /// List of peers
+        peers: Vec<SocketAddr>,
+    },
+}
+
+impl Payload {
+    /// Check if this is a protocol message (vs application message).
+    pub fn is_protocol_message(&self) -> bool {
+        !matches!(self, Self::Application(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_message_id() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let id1 = MessageId::new(addr);
+        let id2 = MessageId::new(addr);
+        assert_ne!(id1.sequence, id2.sequence);
+    }
+
+    #[test]
+    fn decrement_ttl() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let mut msg = Message::with_ttl(addr, Payload::PeerDiscovery, 2);
+        assert!(msg.decrement_ttl());
+        assert_eq!(msg.ttl, 1);
+        assert!(msg.decrement_ttl());
+        assert_eq!(msg.ttl, 0);
+        assert!(!msg.decrement_ttl());
+    }
+}
