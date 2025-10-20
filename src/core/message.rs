@@ -144,6 +144,8 @@ mod tests {
         let id1 = MessageId::new(addr);
         let id2 = MessageId::new(addr);
         assert_ne!(id1.sequence, id2.sequence);
+        assert_eq!(id1.origin, addr);
+        assert_eq!(id2.origin, addr);
     }
 
     #[test]
@@ -155,5 +157,87 @@ mod tests {
         assert!(msg.decrement_ttl());
         assert_eq!(msg.ttl, 0);
         assert!(!msg.decrement_ttl());
+        assert_eq!(msg.ttl, 0);
+    }
+
+    #[test]
+    fn payload_types() {
+        // Payload::Application
+        let data = Bytes::from("test data");
+        let payload = Payload::Application(data.clone());
+        assert!(!payload.is_protocol_message());
+        match payload {
+            Payload::Application(d) => assert_eq!(d, data),
+            _ => panic!("Expected Application payload"),
+        }
+
+        // Payload::PeerDiscovery
+        let payload = Payload::PeerDiscovery;
+        assert!(payload.is_protocol_message());
+
+        // Payload::PeerAnnouncement
+        let peers = vec![
+            "127.0.0.1:8001".parse().unwrap(),
+            "127.0.0.1:8002".parse().unwrap(),
+        ];
+        let payload = Payload::PeerAnnouncement {
+            peers: peers.clone(),
+        };
+        assert!(payload.is_protocol_message());
+        match payload {
+            Payload::PeerAnnouncement { peers: p } => assert_eq!(p, peers),
+            _ => panic!("Expected PeerAnnouncement payload"),
+        }
+
+        // Payload::Heartbeat
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let payload = Payload::Heartbeat { from: addr };
+        assert!(payload.is_protocol_message());
+        match payload {
+            Payload::Heartbeat { from } => assert_eq!(from, addr),
+            _ => panic!("Expected Heartbeat payload"),
+        }
+
+        // Payload::PeerListRequest
+        let payload = Payload::PeerListRequest;
+        assert!(payload.is_protocol_message());
+
+        // Payload::PeerListResponse
+        let peers = vec!["127.0.0.1:8001".parse().unwrap()];
+        let payload = Payload::PeerListResponse {
+            peers: peers.clone(),
+        };
+        assert!(payload.is_protocol_message());
+        match payload {
+            Payload::PeerListResponse { peers: p } => assert_eq!(p, peers),
+            _ => panic!("Expected PeerListResponse payload"),
+        }
+    }
+
+    #[test]
+    fn message_serialization() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let data = Bytes::from("hello");
+        let message = Message::new(addr, Payload::Application(data));
+
+        let serialized = bincode::serialize(&message).unwrap();
+        let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+
+        assert_eq!(message.id, deserialized.id);
+        assert_eq!(message.ttl, deserialized.ttl);
+    }
+
+    #[test]
+    fn multiple_messages_different_sequences() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let messages: Vec<_> = (0..10)
+            .map(|_| Message::new(addr, Payload::PeerDiscovery))
+            .collect();
+
+        for i in 0..messages.len() - 1 {
+            for j in i + 1..messages.len() {
+                assert_ne!(messages[i].id.sequence, messages[j].id.sequence);
+            }
+        }
     }
 }

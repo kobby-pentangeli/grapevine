@@ -140,3 +140,88 @@ impl Peer {
         self.info.state
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_info_saturating_counters() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let mut info = PeerInfo::new(PeerId(addr));
+
+        info.messages_received = u64::MAX;
+        info.increment_received();
+        assert_eq!(info.messages_received, u64::MAX);
+
+        info.messages_sent = u64::MAX;
+        info.increment_sent();
+        assert_eq!(info.messages_sent, u64::MAX);
+    }
+
+    #[test]
+    fn peer_send_success() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let peer_id = PeerId(addr);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut peer = Peer::new(peer_id, tx);
+        let data = Bytes::from("test data");
+
+        assert_eq!(peer.info.messages_sent, 0);
+        let result = peer.send(data.clone());
+        assert!(result.is_ok());
+        assert_eq!(peer.info.messages_sent, 1);
+
+        // Verify data was sent
+        let received = rx.try_recv();
+        assert!(received.is_ok());
+        assert_eq!(received.unwrap(), data);
+    }
+
+    #[test]
+    fn peer_send_failure_channel_closed() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let peer_id = PeerId(addr);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Drop receiver to close channel
+        drop(rx);
+
+        let mut peer = Peer::new(peer_id, tx);
+        let data = Bytes::from("test data");
+
+        let result = peer.send(data);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Channel(_)));
+    }
+
+    #[test]
+    fn peer_multiple_sends() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let peer_id = PeerId(addr);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut peer = Peer::new(peer_id, tx);
+
+        for i in 0..5 {
+            let data = Bytes::from(format!("message {}", i));
+            assert!(peer.send(data.clone()).is_ok());
+            assert_eq!(peer.info.messages_sent, i + 1);
+
+            let received = rx.try_recv().unwrap();
+            assert_eq!(received, Bytes::from(format!("message {}", i)));
+        }
+    }
+
+    #[test]
+    fn peer_id_serialization() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let peer_id = PeerId(addr);
+
+        let serialized = serde_json::to_string(&peer_id).unwrap();
+        let deserialized: PeerId = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(peer_id, deserialized);
+    }
+}

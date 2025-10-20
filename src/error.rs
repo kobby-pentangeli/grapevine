@@ -126,3 +126,44 @@ macro_rules! internal_error {
         $crate::error::Error::internal(format!("{} at {}:{}", format!($fmt, $($arg)*), file!(), line!()))
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_from_bincode() {
+        let bad_data: &[u8] = &[255, 255, 255];
+        let result: Result<u32> = bincode::deserialize(bad_data).map_err(Error::from);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Serialization(_)));
+    }
+
+    #[test]
+    fn internal_error_macro() {
+        let err = internal_error!("test error");
+        assert!(matches!(err, Error::Internal(_)));
+        let msg = format!("{}", err);
+        assert!(msg.contains("test error"));
+        assert!(msg.contains("error.rs")); // Should include file name
+    }
+
+    #[test]
+    fn internal_error_macro_with_format() {
+        let value = 42;
+        let err = internal_error!("value is {}", value);
+        assert!(matches!(err, Error::Internal(_)));
+        let msg = format!("{err}");
+        assert!(msg.contains("value is 42"));
+        assert!(msg.contains("error.rs"));
+    }
+
+    #[test]
+    fn error_source_chain() {
+        use std::error::Error as StdError;
+
+        let io_err = io::Error::new(io::ErrorKind::Other, "inner error");
+        let err = Error::network_with_source("outer error", io_err);
+        assert!(err.source().is_some());
+    }
+}

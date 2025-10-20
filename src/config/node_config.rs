@@ -183,10 +183,16 @@ mod tests {
         let config = NodeConfig::default();
         assert_eq!(config.fanout, 3);
         assert_eq!(config.max_peers, 50);
+        assert_eq!(config.max_message_size, 1024 * 1024);
+        assert_eq!(config.gossip_interval, Duration::from_secs(5));
+        assert_eq!(config.peer_timeout, Duration::from_secs(30));
+        assert_eq!(config.connection_timeout, Duration::from_secs(10));
+        assert!(config.bootstrap_peers.is_empty());
+        assert!(matches!(config.transport, TransportConfig::Tcp));
     }
 
     #[test]
-    fn config_builder() {
+    fn config_builder_basic() {
         let config = NodeConfigBuilder::new()
             .fanout(5)
             .max_peers(100)
@@ -197,8 +203,107 @@ mod tests {
     }
 
     #[test]
-    fn validate_fanout() {
+    fn config_builder_all_fields() {
+        let bind_addr = "192.168.1.1:9000".parse().unwrap();
+        let peer1 = "192.168.1.2:9000".parse().unwrap();
+        let peer2 = "192.168.1.3:9000".parse().unwrap();
+
+        let config = NodeConfigBuilder::new()
+            .bind_addr(bind_addr)
+            .add_bootstrap_peer(peer1)
+            .add_bootstrap_peer(peer2)
+            .fanout(7)
+            .max_peers(200)
+            .max_message_size(2048)
+            .gossip_interval(Duration::from_secs(10))
+            .peer_timeout(Duration::from_secs(60))
+            .connection_timeout(Duration::from_secs(20))
+            .build()
+            .unwrap();
+
+        assert_eq!(config.bind_addr, bind_addr);
+        assert_eq!(config.bootstrap_peers.len(), 2);
+        assert_eq!(config.bootstrap_peers[0], peer1);
+        assert_eq!(config.bootstrap_peers[1], peer2);
+        assert_eq!(config.fanout, 7);
+        assert_eq!(config.max_peers, 200);
+        assert_eq!(config.max_message_size, 2048);
+        assert_eq!(config.gossip_interval, Duration::from_secs(10));
+        assert_eq!(config.peer_timeout, Duration::from_secs(60));
+        assert_eq!(config.connection_timeout, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn config_builder_bootstrap_peers() {
+        let peer1 = "192.168.1.2:9000".parse().unwrap();
+        let peer2 = "192.168.1.3:9000".parse().unwrap();
+        let peers = vec![peer1, peer2];
+
+        let config = NodeConfigBuilder::new()
+            .bootstrap_peers(peers.clone())
+            .build()
+            .unwrap();
+
+        assert_eq!(config.bootstrap_peers, peers);
+    }
+
+    #[test]
+    fn validate_fanout_zero() {
         let result = NodeConfigBuilder::new().fanout(0).build();
         assert!(result.is_err());
+        match result {
+            Err(Error::Config(msg)) => assert!(msg.contains("fanout")),
+            _ => panic!("Expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_max_peers_zero() {
+        let result = NodeConfigBuilder::new().max_peers(0).build();
+        assert!(result.is_err());
+        match result {
+            Err(Error::Config(msg)) => assert!(msg.contains("max_peers")),
+            _ => panic!("Expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_max_message_size_zero() {
+        let result = NodeConfigBuilder::new().max_message_size(0).build();
+        assert!(result.is_err());
+        match result {
+            Err(Error::Config(msg)) => assert!(msg.contains("max_message_size")),
+            _ => panic!("Expected Config error"),
+        }
+    }
+
+    #[test]
+    fn validate_all_valid() {
+        let config = NodeConfigBuilder::new()
+            .fanout(1)
+            .max_peers(1)
+            .max_message_size(1)
+            .build();
+        assert!(config.is_ok());
+    }
+
+    #[test]
+    fn config_serialization() {
+        let config = NodeConfig::default();
+        let serialized = serde_json::to_string(&config).unwrap();
+        let deserialized: NodeConfig = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(config.fanout, deserialized.fanout);
+        assert_eq!(config.max_peers, deserialized.max_peers);
+        assert_eq!(config.max_message_size, deserialized.max_message_size);
+    }
+
+    #[test]
+    fn transport_config_tcp() {
+        let config = NodeConfigBuilder::new()
+            .transport(TransportConfig::Tcp)
+            .build()
+            .unwrap();
+        assert!(matches!(config.transport, TransportConfig::Tcp));
     }
 }
