@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::core::MessageId;
+use crate::MessageId;
 
 /// Anti-entropy configuration.
 #[derive(Debug, Clone)]

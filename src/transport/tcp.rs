@@ -11,9 +11,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::{debug, error, info, warn};
 
-use crate::codec::MessageCodec;
-use crate::core::{Message, Peer, PeerId};
-use crate::{Error, Result};
+use crate::{Error, Message, MessageCodec, Peer, PeerId, Result};
 
 /// TCP transport for gossip messages.
 pub struct TcpTransport {

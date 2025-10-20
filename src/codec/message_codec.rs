@@ -3,8 +3,7 @@
 use bytes::{Buf, BufMut, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::core::Message;
-use crate::{Error, Result};
+use crate::{Error, Message, Result};
 
 const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 

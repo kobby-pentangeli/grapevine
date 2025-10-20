@@ -11,10 +11,8 @@ use tokio::sync::{RwLock, mpsc};
 use tokio::time;
 use tracing::{debug, info, trace, warn};
 
-use crate::config::NodeConfig;
-use crate::core::{Message, MessageId, Payload, Peer, PeerId};
 use crate::transport::tcp::TcpTransport;
-use crate::{Error, Result};
+use crate::{Error, Message, MessageId, NodeConfig, Payload, Peer, PeerId, Result};
 
 /// Main gossip protocol engine.
 pub struct Gossip {
