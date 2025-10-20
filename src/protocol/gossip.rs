@@ -127,7 +127,6 @@ impl Gossip {
     /// Shutdown the node.
     pub async fn shutdown(&self) -> Result<()> {
         let _ = self.shutdown_tx.send(());
-        // Give tasks time to shut down gracefully
         sleep(Duration::from_millis(100)).await;
         Ok(())
     }
@@ -147,7 +146,7 @@ impl Gossip {
                 let result = tokio::select! {
                     _ = shutdown_rx.recv() => {
                         debug!("Message receiver shutting down");
-                        return; // Exit the spawned task entirely
+                        return;
                     }
                     result = recv_fut => result,
                 };
