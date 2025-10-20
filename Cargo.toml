@@ -79,9 +79,9 @@ name = "grapevine"
 path = "src/bin/main.rs"
 required-features = []
 
-# [[bench]]
-# name = "gossip_bench"
-# harness = false
+[[bench]]
+name = "gossip_bench"
+harness = false
 
 [profile.release]
 opt-level = 3

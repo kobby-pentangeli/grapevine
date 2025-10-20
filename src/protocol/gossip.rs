@@ -7,8 +7,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
-use tokio::sync::{RwLock, mpsc};
-use tokio::time;
+use tokio::sync::{RwLock, broadcast};
+use tokio::time::{self, sleep};
 use tracing::{debug, info, trace, warn};
 
 use crate::transport::tcp::TcpTransport;
@@ -31,15 +31,14 @@ pub struct Gossip {
     /// Application message handler
     message_handler: Option<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
 
-    /// Shutdown signal
-    shutdown_tx: mpsc::Sender<()>,
-    // shutdown_rx: mpsc::Receiver<()>,
+    /// Shutdown signal broadcaster
+    shutdown_tx: broadcast::Sender<()>,
 }
 
 impl Gossip {
     /// Create a new gossip protocol instance.
     pub fn new(config: NodeConfig) -> Self {
-        let (shutdown_tx, _shutdown_rx) = mpsc::channel(1);
+        let (shutdown_tx, _) = broadcast::channel(16);
 
         Self {
             config,
@@ -48,7 +47,6 @@ impl Gossip {
             seen_messages: Arc::new(DashMap::new()),
             message_handler: None,
             shutdown_tx,
-            // shutdown_rx,
         }
     }
 
@@ -128,10 +126,9 @@ impl Gossip {
 
     /// Shutdown the node.
     pub async fn shutdown(&self) -> Result<()> {
-        self.shutdown_tx
-            .send(())
-            .await
-            .map_err(|_| Error::internal("Failed to send shutdown signal"))?;
+        let _ = self.shutdown_tx.send(());
+        // Give tasks time to shut down gracefully
+        sleep(Duration::from_millis(100)).await;
         Ok(())
     }
 
@@ -141,10 +138,21 @@ impl Gossip {
         let seen_messages = Arc::clone(&self.seen_messages);
         let message_handler = self.message_handler.clone();
         let config = self.config.clone();
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             loop {
-                let (peer_addr, message) = match transport.write().await.recv().await {
+                let recv_fut = async { transport.write().await.recv().await };
+
+                let result = tokio::select! {
+                    _ = shutdown_rx.recv() => {
+                        debug!("Message receiver shutting down");
+                        return; // Exit the spawned task entirely
+                    }
+                    result = recv_fut => result,
+                };
+
+                let (peer_addr, message) = match result {
                     Ok(msg) => msg,
                     Err(e) => {
                         warn!("Error receiving message: {e}");
@@ -194,32 +202,39 @@ impl Gossip {
         let interval = self.config.gossip_interval;
         let transport = Arc::clone(&self.transport);
         let peers = Arc::clone(&self.peers);
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             let mut ticker = time::interval(interval);
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = shutdown_rx.recv() => {
+                        debug!("Gossip loop shutting down");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        // Send heartbeats
+                        let local_addr = match transport.read().await.local_addr() {
+                            Some(addr) => addr,
+                            None => continue,
+                        };
 
-                // Send heartbeats
-                let local_addr = match transport.read().await.local_addr() {
-                    Some(addr) => addr,
-                    None => continue,
-                };
+                        let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
 
-                let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
-
-                let peer_addrs = peers
-                    .iter()
-                    .map(|entry| entry.key().0)
-                    .collect::<Vec<SocketAddr>>();
-                for peer_addr in peer_addrs {
-                    if let Err(e) = transport
-                        .read()
-                        .await
-                        .send(peer_addr, heartbeat.clone())
-                        .await
-                    {
-                        debug!("Failed to send heartbeat to {peer_addr}: {e}");
+                        let peer_addrs = peers
+                            .iter()
+                            .map(|entry| entry.key().0)
+                            .collect::<Vec<SocketAddr>>();
+                        for peer_addr in peer_addrs {
+                            if let Err(e) = transport
+                                .read()
+                                .await
+                                .send(peer_addr, heartbeat.clone())
+                                .await
+                            {
+                                debug!("Failed to send heartbeat to {peer_addr}: {e}");
+                            }
+                        }
                     }
                 }
             }
@@ -229,21 +244,28 @@ impl Gossip {
     fn spawn_peer_maintenance(&self) {
         let peers = Arc::clone(&self.peers);
         let timeout = self.config.peer_timeout;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             let mut ticker = time::interval(Duration::from_secs(10));
             loop {
-                ticker.tick().await;
+                tokio::select! {
+                    _ = shutdown_rx.recv() => {
+                        debug!("Peer maintenance shutting down");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let stale_peers = peers
+                            .iter()
+                            .filter(|entry| entry.value().info.is_stale(timeout))
+                            .map(|entry| *entry.key())
+                            .collect::<Vec<PeerId>>();
 
-                let stale_peers = peers
-                    .iter()
-                    .filter(|entry| entry.value().info.is_stale(timeout))
-                    .map(|entry| *entry.key())
-                    .collect::<Vec<PeerId>>();
-
-                for peer_id in stale_peers {
-                    info!("Removing stale peer {peer_id}");
-                    peers.remove(&peer_id);
+                        for peer_id in stale_peers {
+                            info!("Removing stale peer {peer_id}");
+                            peers.remove(&peer_id);
+                        }
+                    }
                 }
             }
         });
