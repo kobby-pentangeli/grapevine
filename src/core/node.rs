@@ -72,3 +72,12 @@ impl Node {
         Ok(())
     }
 }
+
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            protocol: Arc::clone(&self.protocol),
+        }
+    }
+}
