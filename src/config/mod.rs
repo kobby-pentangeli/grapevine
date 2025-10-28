@@ -2,4 +2,4 @@
 
 pub mod node_config;
 
-pub use node_config::{NodeConfig, NodeConfigBuilder};
+pub use node_config::{NodeConfig, NodeConfigBuilder, TransportConfig};
