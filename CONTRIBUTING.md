@@ -37,6 +37,4 @@ GitHub provides additional document on [forking a repository](https://help.githu
 
 ## Licensing
 
-See the [LICENSE-MIT](https://github.com/kobby-pentangeli/grapevine/blob/master/LICENSE-MIT) and [LICENSE-APACHE](https://github.com/kobby-pentangeli/grapevine/blob/master/LICENSE-APACHE) files for this project's licensing. Kindly confirm the licensing of your contribution.
-
-You may be asked to sign a [Contributor License Agreement (CLA)](http://en.wikipedia.org/wiki/Contributor_License_Agreement) for larger changes.
+See the [LICENSE-MIT](./LICENSE-MIT) and [LICENSE-APACHE](./LICENSE-APACHE) files for this project's licensing. Kindly confirm the licensing of your contribution. You may be asked to sign a [Contributor License Agreement (CLA)](http://en.wikipedia.org/wiki/Contributor_License_Agreement) for larger changes.
