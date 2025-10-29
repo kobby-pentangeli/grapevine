@@ -18,7 +18,7 @@ If applicable, add screenshots and/or logs to help explain your problem.
 
 **Relevant environment details:**
 
-- OS: [e.g. iOS]
+- OS: [e.g. MacOS]
 - etc
 
 **Additional context**

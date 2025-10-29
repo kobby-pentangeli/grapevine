@@ -162,7 +162,7 @@ mod tests {
     fn error_source_chain() {
         use std::error::Error as StdError;
 
-        let io_err = io::Error::new(io::ErrorKind::Other, "inner error");
+        let io_err = io::Error::other("inner error");
         let err = Error::network_with_source("outer error", io_err);
         assert!(err.source().is_some());
     }

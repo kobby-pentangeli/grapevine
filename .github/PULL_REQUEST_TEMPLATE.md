@@ -22,5 +22,3 @@ Closes #
 - [x] This PR does not affect public APIs
 - [x] This PR does not rely on a new version of external services
 - [x] This PR does not make changes to log messages (which monitoring infrastructure may rely on)
-
-By submitting this pull request, I confirm that my contribution is made under the terms of either the MIT license or the Apache 2.0 license.
