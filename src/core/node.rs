@@ -10,6 +10,54 @@ use tracing::info;
 use crate::{Gossip, NodeConfig, Result};
 
 /// A Grapevine gossip node.
+///
+/// `Node` is the main entry point for using Grapevine. It manages connections
+/// to peers, handles message routing, and provides a high-level API for
+/// broadcasting messages.
+///
+/// # Examples
+///
+/// ## Basic usage
+///
+/// ```rust,no_run
+/// use grapevine::{Node, NodeConfig};
+/// use bytes::Bytes;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let config = NodeConfig::default();
+///     let node = Node::new(config).await?;
+///
+///     node.on_message(|origin, data| {
+///         println!("Got message from {}: {:?}", origin, data);
+///     }).await;
+///
+///     node.start().await?;
+///     node.broadcast(Bytes::from("Hello!")).await?;
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// ## With custom configuration
+///
+/// ```rust,no_run
+/// use grapevine::{Node, NodeConfigBuilder};
+/// use std::time::Duration;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let config = NodeConfigBuilder::new()
+///         .gossip_interval(Duration::from_secs(3))
+///         .fanout(5)
+///         .build()?;
+///
+///     let node = Node::new(config).await?;
+///     node.start().await?;
+///
+///     Ok(())
+/// }
+/// ```
 pub struct Node {
     /// Node configuration
     pub config: NodeConfig,
