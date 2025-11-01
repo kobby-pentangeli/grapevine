@@ -117,6 +117,8 @@ Grapevine implements a push-based gossip protocol with the following components:
 - **Message Deduplication**: Efficient tracking of seen messages
 - **Configurable Fan-out**: Control gossip spread vs. network load
 
+See [Architecture Documentation](docs/architecture.md) for details.
+
 ## Performance
 
 Benchmarks on Apple M1 Pro:
