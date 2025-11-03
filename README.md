@@ -148,6 +148,51 @@ cargo test --test integration
 RUST_LOG=debug cargo test
 ```
 
+## CLI Usage
+
+Grapevine includes a standalone binary for running gossip nodes:
+
+```bash
+# Run with default settings (listens on 127.0.0.1:8000)
+cargo run --bin grapevine -- --port 8000
+
+# Run with custom host and port
+cargo run --bin grapevine -- --host 0.0.0.0 --port 8001
+
+# Connect to bootstrap peers
+cargo run --bin grapevine -- --port 8002 \
+  --peer 127.0.0.1:8000 \
+  --peer 127.0.0.1:8001
+
+# Configure via environment variables (see .env.example)
+BIND_HOST=0.0.0.0 BIND_PORT=8000 cargo run --bin grapevine
+
+# Set log level
+cargo run --bin grapevine -- --port 8000 --log-level debug
+```
+
+### CLI Arguments
+
+```bash
+-H, --host <HOST>                Host to bind to [env: BIND_HOST] [default: 127.0.0.1]
+-p, --port <PORT>                Port to listen on [env: BIND_PORT]
+-b, --peer <PEER>                Bootstrap peer addresses [env: BOOTSTRAP_PEERS]
+-g, --gossip-interval <SECS>     Gossip interval in seconds [env: GOSSIP_INTERVAL_SECS] [default: 5]
+-f, --fanout <FANOUT>            Fan-out factor [env: FANOUT] [default: 3]
+-m, --max-peers <MAX_PEERS>      Maximum number of peers [env: MAX_PEERS] [default: 50]
+-l, --log-level <LEVEL>          Log level (trace, debug, info, warn, error) [env: RUST_LOG] [default: info]
+```
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and customize:
+
+```bash
+cp .env.example .env
+# Edit .env with your configuration
+cargo run --bin grapevine
+```
+
 ## Examples
 
 See the [examples](examples/) directory:
@@ -159,7 +204,7 @@ See the [examples](examples/) directory:
 Run an example:
 
 ```bash
-cargo run --example simple_node
+RUST_LOG=info cargo run --example simple_node
 ```
 
 ## Contributing

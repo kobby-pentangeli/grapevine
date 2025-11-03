@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -25,8 +25,8 @@ pub struct Gossip {
     /// Connected peers
     peers: Arc<DashMap<PeerId, Peer>>,
 
-    /// Seen message IDs (for deduplication)
-    seen_messages: Arc<DashMap<MessageId, ()>>,
+    /// Seen message IDs with timestamps (for deduplication with time-based expiry)
+    seen_messages: Arc<DashMap<MessageId, Instant>>,
 
     /// Application message handler
     message_handler: Option<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
@@ -78,6 +78,7 @@ impl Gossip {
         self.spawn_message_receiver();
         self.spawn_gossip_loop();
         self.spawn_peer_maintenance();
+        self.spawn_message_cleanup();
 
         Ok(())
     }
@@ -108,8 +109,8 @@ impl Gossip {
 
         let message = Message::new(local_addr, Payload::Application(data));
 
-        // Mark as seen
-        self.seen_messages.insert(message.id, ());
+        // Mark as seen with current timestamp
+        self.seen_messages.insert(message.id, Instant::now());
 
         self.gossip_message(message).await
     }
@@ -120,8 +121,8 @@ impl Gossip {
     }
 
     /// Get list of connected peers.
-    pub fn peer_list(&self) -> Vec<SocketAddr> {
-        self.peers.iter().map(|entry| entry.key().0).collect()
+    pub async fn peer_list(&self) -> Vec<SocketAddr> {
+        self.transport.read().await.peers()
     }
 
     /// Shutdown the node.
@@ -141,7 +142,7 @@ impl Gossip {
 
         tokio::spawn(async move {
             loop {
-                let recv_fut = async { transport.write().await.recv().await };
+                let recv_fut = async { transport.read().await.recv().await };
 
                 let result = tokio::select! {
                     _ = shutdown_rx.recv() => {
@@ -164,7 +165,7 @@ impl Gossip {
                 // Handle protocol messages
                 match &message.payload {
                     Payload::PeerListRequest => {
-                        Self::handle_peer_list_request(&transport, &peers, peer_addr).await;
+                        Self::handle_peer_list_request(&transport, peer_addr).await;
                     }
                     Payload::PeerListResponse { peers: peer_list } => {
                         Self::handle_peer_list_response(&transport, peer_list).await;
@@ -174,7 +175,7 @@ impl Gossip {
                             trace!("Duplicate message {}, ignoring", message.id);
                             continue;
                         }
-                        seen_messages.insert(message.id, ());
+                        seen_messages.insert(message.id, Instant::now());
                         if let Some(ref handler) = message_handler {
                             handler(message.id.origin, data.clone());
                         }
@@ -200,7 +201,6 @@ impl Gossip {
     fn spawn_gossip_loop(&self) {
         let interval = self.config.gossip_interval;
         let transport = Arc::clone(&self.transport);
-        let peers = Arc::clone(&self.peers);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
@@ -212,25 +212,17 @@ impl Gossip {
                         break;
                     }
                     _ = ticker.tick() => {
-                        // Send heartbeats
-                        let local_addr = match transport.read().await.local_addr() {
+                        let transport_guard = transport.read().await;
+                        let local_addr = match transport_guard.local_addr() {
                             Some(addr) => addr,
                             None => continue,
                         };
 
                         let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
+                        let peer_addrs = transport_guard.peers();
 
-                        let peer_addrs = peers
-                            .iter()
-                            .map(|entry| entry.key().0)
-                            .collect::<Vec<SocketAddr>>();
                         for peer_addr in peer_addrs {
-                            if let Err(e) = transport
-                                .read()
-                                .await
-                                .send(peer_addr, heartbeat.clone())
-                                .await
-                            {
+                            if let Err(e) = transport_guard.send(peer_addr, heartbeat.clone()).await {
                                 debug!("Failed to send heartbeat to {peer_addr}: {e}");
                             }
                         }
@@ -270,6 +262,41 @@ impl Gossip {
         });
     }
 
+    fn spawn_message_cleanup(&self) {
+        let seen_messages = Arc::clone(&self.seen_messages);
+        let ttl = self.config.message_dedup_ttl;
+        let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+        tokio::spawn(async move {
+            let mut ticker = time::interval(Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.recv() => {
+                        debug!("Message cleanup shutting down");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let now = Instant::now();
+                        let stale_messages: Vec<MessageId> = seen_messages
+                            .iter()
+                            .filter(|entry| now.duration_since(*entry.value()) > ttl)
+                            .map(|entry| *entry.key())
+                            .collect();
+
+                        let count = stale_messages.len();
+                        for message_id in stale_messages {
+                            seen_messages.remove(&message_id);
+                        }
+
+                        if count > 0 {
+                            debug!("Cleaned up {count} stale message IDs");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     async fn gossip_message(&self, message: Message) -> Result<()> {
         Self::gossip_to_random_peers(&self.transport, &self.peers, message, self.config.fanout)
             .await
@@ -277,29 +304,25 @@ impl Gossip {
 
     async fn gossip_to_random_peers(
         transport: &Arc<RwLock<TcpTransport>>,
-        peers: &Arc<DashMap<PeerId, Peer>>,
+        _peers: &Arc<DashMap<PeerId, Peer>>,
         message: Message,
         fanout: usize,
     ) -> Result<()> {
-        let peer_addrs = peers
-            .iter()
-            .map(|entry| entry.key().0)
-            .collect::<Vec<SocketAddr>>();
+        let transport_guard = transport.read().await;
+        let mut peer_addrs = transport_guard.peers();
 
         if peer_addrs.is_empty() {
             return Ok(());
         }
 
-        let selected = {
+        let selected: Vec<_> = {
             let mut rng = rand::thread_rng();
-            let mut addrs = peer_addrs;
-            addrs.shuffle(&mut rng);
-            addrs.into_iter().take(fanout).collect::<Vec<_>>()
+            peer_addrs.shuffle(&mut rng);
+            peer_addrs.into_iter().take(fanout).collect()
         };
 
-        let transport = transport.read().await;
         for addr in selected {
-            if let Err(e) = transport.send(addr, message.clone()).await {
+            if let Err(e) = transport_guard.send(addr, message.clone()).await {
                 warn!("Failed to gossip to {addr}: {e}");
             }
         }
@@ -307,23 +330,17 @@ impl Gossip {
         Ok(())
     }
 
-    async fn handle_peer_list_request(
-        transport: &Arc<RwLock<TcpTransport>>,
-        peers: &Arc<DashMap<PeerId, Peer>>,
-        sender: SocketAddr,
-    ) {
-        let peer_list = peers
-            .iter()
-            .map(|entry| entry.key().0)
-            .collect::<Vec<SocketAddr>>();
+    async fn handle_peer_list_request(transport: &Arc<RwLock<TcpTransport>>, sender: SocketAddr) {
+        let transport_guard = transport.read().await;
+        let peer_list = transport_guard.peers();
 
-        let local_addr = match transport.read().await.local_addr() {
+        let local_addr = match transport_guard.local_addr() {
             Some(addr) => addr,
             None => return,
         };
 
         let response = Message::new(local_addr, Payload::PeerListResponse { peers: peer_list });
-        if let Err(e) = transport.read().await.send(sender, response).await {
+        if let Err(e) = transport_guard.send(sender, response).await {
             warn!("Failed to send peer list to {sender}: {e}");
         }
     }

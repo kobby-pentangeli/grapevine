@@ -109,7 +109,7 @@ impl Node {
     /// Get connected peer addresses.
     pub async fn peers(&self) -> Vec<SocketAddr> {
         let protocol = self.protocol.read().await;
-        protocol.peer_list()
+        protocol.peer_list().await
     }
 
     /// Shutdown the node gracefully.

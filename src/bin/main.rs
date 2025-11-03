@@ -14,29 +14,38 @@ use tracing_subscriber::FmtSubscriber;
 #[command(about = "A modern, asynchronous peer-to-peer gossip protocol client", long_about = None)]
 #[command(version)]
 struct Args {
+    /// Host to bind to
+    #[arg(short = 'H', long, env = "BIND_HOST", default_value = "127.0.0.1")]
+    host: String,
+
     /// Port to listen on
-    #[arg(short, long)]
+    #[arg(short, long, env = "BIND_PORT")]
     port: u16,
 
     /// Bootstrap peer addresses (can specify multiple)
-    #[arg(short = 'b', long = "peer")]
+    #[arg(
+        short = 'b',
+        long = "peer",
+        env = "BOOTSTRAP_PEERS",
+        value_delimiter = ','
+    )]
     bootstrap_peers: Vec<SocketAddr>,
 
     /// Gossip interval in seconds
-    #[arg(short, long, default_value = "5")]
+    #[arg(short, long, env = "GOSSIP_INTERVAL_SECS", default_value = "5")]
     gossip_interval: u64,
 
     /// Fan-out factor
-    #[arg(short, long, default_value = "3")]
+    #[arg(short, long, env = "FANOUT", default_value = "3")]
     fanout: usize,
 
     /// Maximum number of peers
-    #[arg(short, long, default_value = "50")]
+    #[arg(short, long, env = "MAX_PEERS", default_value = "50")]
     max_peers: usize,
 
-    /// Enable debug logging
-    #[arg(long)]
-    debug: bool,
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(short = 'l', long, env = "RUST_LOG", default_value = "info")]
+    log_level: String,
 }
 
 #[tokio::main]
@@ -44,15 +53,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize tracing
-    let level = if args.debug {
-        Level::DEBUG
-    } else {
-        Level::INFO
+    let level = match args.log_level.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => {
+            eprintln!("Invalid log level '{}', using 'info'", args.log_level);
+            Level::INFO
+        }
     };
     let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
-    let bind_addr = format!("127.0.0.1:{}", args.port).parse::<SocketAddr>()?;
+    let bind_addr = format!("{}:{}", args.host, args.port).parse::<SocketAddr>()?;
 
     let mut builder = NodeConfigBuilder::new()
         .bind_addr(bind_addr)

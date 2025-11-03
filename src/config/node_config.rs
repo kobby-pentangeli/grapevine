@@ -34,6 +34,9 @@ pub struct NodeConfig {
     /// Connection timeout
     pub connection_timeout: Duration,
 
+    /// Message deduplication TTL (how long to remember seen messages)
+    pub message_dedup_ttl: Duration,
+
     /// Enable message signing (requires 'crypto' feature)
     #[cfg(feature = "crypto")]
     pub enable_signing: bool,
@@ -68,6 +71,7 @@ impl Default for NodeConfig {
             peer_timeout: Duration::from_secs(30),
             max_peers: 50,
             connection_timeout: Duration::from_secs(10),
+            message_dedup_ttl: Duration::from_secs(300), // 5 minutes
             #[cfg(feature = "crypto")]
             enable_signing: false,
             transport: TransportConfig::Tcp,
@@ -138,6 +142,12 @@ impl NodeConfigBuilder {
     /// Set connection timeout.
     pub fn connection_timeout(mut self, timeout: Duration) -> Self {
         self.config.connection_timeout = timeout;
+        self
+    }
+
+    /// Set message deduplication TTL.
+    pub fn message_dedup_ttl(mut self, ttl: Duration) -> Self {
+        self.config.message_dedup_ttl = ttl;
         self
     }
 

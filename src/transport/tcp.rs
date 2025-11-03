@@ -7,6 +7,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use futures::stream::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::{debug, error, info, warn};
@@ -22,7 +23,7 @@ pub struct TcpTransport {
     peers: Arc<DashMap<SocketAddr, Peer>>,
 
     /// Channel for receiving messages from all peers
-    message_rx: UnboundedReceiver<(SocketAddr, Message)>,
+    message_rx: Arc<Mutex<UnboundedReceiver<(SocketAddr, Message)>>>,
 
     /// Channel for sending messages (cloned to connection handlers)
     message_tx: UnboundedSender<(SocketAddr, Message)>,
@@ -36,7 +37,7 @@ impl TcpTransport {
         Self {
             local_addr: None,
             peers: Arc::new(DashMap::new()),
-            message_rx,
+            message_rx: Arc::new(Mutex::new(message_rx)),
             message_tx,
         }
     }
@@ -97,7 +98,18 @@ impl TcpTransport {
             self.message_tx.clone(),
         );
 
-        Ok(())
+        let max_wait = 50;
+        for _ in 0..max_wait {
+            if self.peers.contains_key(&addr) {
+                return Ok(());
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+
+        Err(Error::Connection {
+            addr,
+            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "peer registration timeout"),
+        })
     }
 
     /// Send a message to a peer.
@@ -114,8 +126,10 @@ impl TcpTransport {
     }
 
     /// Receive a message from any peer.
-    pub async fn recv(&mut self) -> Result<(SocketAddr, Message)> {
+    pub async fn recv(&self) -> Result<(SocketAddr, Message)> {
         self.message_rx
+            .lock()
+            .await
             .recv()
             .await
             .ok_or(Error::Channel("Channel recv error".to_string()))
