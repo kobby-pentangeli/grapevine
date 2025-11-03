@@ -59,6 +59,12 @@ pub struct PeerInfo {
 
     /// Number of messages sent to this peer
     pub messages_sent: u64,
+
+    /// Number of failed send attempts
+    pub failures: u64,
+
+    /// Consecutive failures (reset on success)
+    pub consecutive_failures: u64,
 }
 
 impl PeerInfo {
@@ -72,6 +78,8 @@ impl PeerInfo {
             connected_at: now,
             messages_received: 0,
             messages_sent: 0,
+            failures: 0,
+            consecutive_failures: 0,
         }
     }
 
@@ -80,9 +88,22 @@ impl PeerInfo {
         self.state = PeerState::Connected;
     }
 
+    /// Mark peer as stale.
+    pub fn mark_stale(&mut self) {
+        self.state = PeerState::Stale;
+    }
+
+    /// Mark peer as disconnected.
+    pub fn mark_disconnected(&mut self) {
+        self.state = PeerState::Disconnected;
+    }
+
     /// Update last seen timestamp.
     pub fn update_last_seen(&mut self) {
         self.last_seen = Instant::now();
+        if self.state == PeerState::Stale {
+            self.state = PeerState::Connected;
+        }
     }
 
     /// Check if peer is stale (hasn't been seen recently).
@@ -99,6 +120,35 @@ impl PeerInfo {
     /// Increment sent message counter.
     pub fn increment_sent(&mut self) {
         self.messages_sent = self.messages_sent.saturating_add(1);
+        self.consecutive_failures = 0;
+    }
+
+    /// Record a failure.
+    pub fn record_failure(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+    }
+
+    /// Calculate health score (0.0 = poor, 1.0 = excellent).
+    pub fn health_score(&self) -> f64 {
+        let total_attempts = self.messages_sent + self.failures;
+        if total_attempts == 0 {
+            return 1.0;
+        }
+
+        let success_rate = self.messages_sent as f64 / total_attempts as f64;
+
+        let age_seconds = self.connected_at.elapsed().as_secs() as f64;
+        let age_bonus = (age_seconds / 300.0).min(0.2);
+
+        let consecutive_penalty = (self.consecutive_failures as f64 * 0.1).min(0.5);
+
+        (success_rate + age_bonus - consecutive_penalty).clamp(0.0, 1.0)
+    }
+
+    /// Check if peer should be disconnected due to failures.
+    pub fn should_disconnect(&self) -> bool {
+        self.consecutive_failures >= 5
     }
 }
 
@@ -123,11 +173,16 @@ impl Peer {
 
     /// Send data to this peer.
     pub fn send(&mut self, data: Bytes) -> Result<()> {
-        self.sender
-            .send(data)
-            .map_err(|err| Error::Channel(err.to_string()))?;
-        self.info.increment_sent();
-        Ok(())
+        match self.sender.send(data) {
+            Ok(()) => {
+                self.info.increment_sent();
+                Ok(())
+            }
+            Err(err) => {
+                self.info.record_failure();
+                Err(Error::Channel(err.to_string()))
+            }
+        }
     }
 
     /// Get peer ID.

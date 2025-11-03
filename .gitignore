@@ -1,13 +1,25 @@
+# IDE
 /.idea
+.vscode/
+
+# Build artifacts
 /target
 Cargo.lock
+
+# Editor temporary files
 *.swp
 *.swo
 *~
+
+# OS files
 .DS_Store
-.vscode/
+
+# Profiling and performance data
 *.profraw
 *.profdata
 flamegraph.svg
 perf.data
 perf.data.old
+
+# Environment configuration
+.env

@@ -19,7 +19,7 @@ struct Args {
     host: String,
 
     /// Port to listen on
-    #[arg(short, long, env = "BIND_PORT")]
+    #[arg(short, long, env = "BIND_PORT", default_value = "8000")]
     port: u16,
 
     /// Bootstrap peer addresses (can specify multiple)

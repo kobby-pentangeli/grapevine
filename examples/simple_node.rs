@@ -1,6 +1,7 @@
 //! Simple single-node example.
 //!
-//! Run with: RUST_LOG=info cargo run --example simple_node
+//! Run with: `RUST_LOG=info cargo run --example simple_node`
+//! Shutdown with `Control+C (^C)`
 
 use bytes::Bytes;
 use grapevine::{Node, NodeConfig};

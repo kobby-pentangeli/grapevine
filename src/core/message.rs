@@ -125,6 +125,24 @@ pub enum Payload {
         /// List of peers
         peers: Vec<SocketAddr>,
     },
+
+    /// Anti-entropy digest (message IDs this node knows about)
+    AntiEntropyDigest {
+        /// Set of known message IDs
+        message_ids: Vec<MessageId>,
+    },
+
+    /// Request for specific messages by ID
+    MessageRequest {
+        /// Message IDs being requested
+        ids: Vec<MessageId>,
+    },
+
+    /// Response containing requested messages
+    MessageResponse {
+        /// The requested messages
+        messages: Vec<Message>,
+    },
 }
 
 impl Payload {

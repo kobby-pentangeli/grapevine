@@ -1,6 +1,7 @@
 //! Example demonstrating custom configuration.
 //!
-//! Run with: RUST_LOG=info cargo run --example custom_config
+//! Run with: `RUST_LOG=info cargo run --example custom_config`
+//! Shutdown with `Control+C (^C)`
 
 use std::time::Duration;
 

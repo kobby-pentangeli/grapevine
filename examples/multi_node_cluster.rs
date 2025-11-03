@@ -2,7 +2,8 @@
 //!
 //! Creates a cluster of 5 nodes and demonstrates message propagation.
 //!
-//! Run with: RUST_LOG=info cargo run --example multi_node_cluster
+//! Run with: `RUST_LOG=info cargo run --example multi_node_cluster`
+//! Shutdown with `Control+C (^C)`
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -5,6 +5,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::anti_entropy::AntiEntropyConfig;
+use crate::protocol::epidemic::EpidemicConfig;
 use crate::{Error, Result};
 
 /// Configuration for a Grapevine node.
@@ -36,6 +38,12 @@ pub struct NodeConfig {
 
     /// Message deduplication TTL (how long to remember seen messages)
     pub message_dedup_ttl: Duration,
+
+    /// Anti-entropy protocol configuration
+    pub anti_entropy: AntiEntropyConfig,
+
+    /// Epidemic broadcast configuration
+    pub epidemic: EpidemicConfig,
 
     /// Enable message signing (requires 'crypto' feature)
     #[cfg(feature = "crypto")]
@@ -72,6 +80,8 @@ impl Default for NodeConfig {
             max_peers: 50,
             connection_timeout: Duration::from_secs(10),
             message_dedup_ttl: Duration::from_secs(300), // 5 minutes
+            anti_entropy: AntiEntropyConfig::default(),
+            epidemic: EpidemicConfig::default(),
             #[cfg(feature = "crypto")]
             enable_signing: false,
             transport: TransportConfig::Tcp,
@@ -148,6 +158,18 @@ impl NodeConfigBuilder {
     /// Set message deduplication TTL.
     pub fn message_dedup_ttl(mut self, ttl: Duration) -> Self {
         self.config.message_dedup_ttl = ttl;
+        self
+    }
+
+    /// Set anti-entropy configuration.
+    pub fn anti_entropy(mut self, config: AntiEntropyConfig) -> Self {
+        self.config.anti_entropy = config;
+        self
+    }
+
+    /// Set epidemic broadcast configuration.
+    pub fn epidemic(mut self, config: EpidemicConfig) -> Self {
+        self.config.epidemic = config;
         self
     }
 

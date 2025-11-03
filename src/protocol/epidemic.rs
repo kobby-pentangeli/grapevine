@@ -3,9 +3,10 @@
 //! Implements probabilistic message dissemination.
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 /// Configuration for epidemic broadcast.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpidemicConfig {
     /// Probability of forwarding a message (0.0 - 1.0)
     pub forward_probability: f64,

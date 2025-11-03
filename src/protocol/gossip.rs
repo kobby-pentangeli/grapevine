@@ -11,8 +11,10 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::time::{self, sleep};
 use tracing::{debug, info, trace, warn};
 
+use crate::protocol::anti_entropy::{AntiEntropy, MessageEntry};
+use crate::protocol::epidemic::EpidemicConfig;
 use crate::transport::tcp::TcpTransport;
-use crate::{Error, Message, MessageId, NodeConfig, Payload, Peer, PeerId, Result};
+use crate::{Error, Message, MessageId, NodeConfig, Payload, Peer, PeerId, PeerState, Result};
 
 /// Main gossip protocol engine.
 pub struct Gossip {
@@ -25,28 +27,48 @@ pub struct Gossip {
     /// Connected peers
     peers: Arc<DashMap<PeerId, Peer>>,
 
-    /// Seen message IDs with timestamps (for deduplication with time-based expiry)
-    seen_messages: Arc<DashMap<MessageId, Instant>>,
+    /// Seen messages with full message data and metadata
+    seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
 
     /// Application message handler
     message_handler: Option<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
 
     /// Shutdown signal broadcaster
     shutdown_tx: broadcast::Sender<()>,
+
+    /// Anti-entropy engine
+    anti_entropy: Option<Arc<AntiEntropy>>,
+
+    /// Epidemic broadcast config
+    epidemic_config: EpidemicConfig,
 }
 
 impl Gossip {
     /// Create a new gossip protocol instance.
     pub fn new(config: NodeConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(16);
+        let transport = Arc::new(RwLock::new(TcpTransport::new()));
+        let seen_messages = Arc::new(DashMap::new());
+
+        let anti_entropy = if config.anti_entropy.enabled {
+            Some(Arc::new(AntiEntropy::new(
+                config.anti_entropy.clone(),
+                Arc::clone(&transport),
+                Arc::clone(&seen_messages),
+            )))
+        } else {
+            None
+        };
 
         Self {
+            epidemic_config: config.epidemic.clone(),
             config,
-            transport: Arc::new(RwLock::new(TcpTransport::new())),
+            transport,
             peers: Arc::new(DashMap::new()),
-            seen_messages: Arc::new(DashMap::new()),
+            seen_messages,
             message_handler: None,
             shutdown_tx,
+            anti_entropy,
         }
     }
 
@@ -80,6 +102,10 @@ impl Gossip {
         self.spawn_peer_maintenance();
         self.spawn_message_cleanup();
 
+        if let Some(ref anti_entropy) = self.anti_entropy {
+            anti_entropy.start().await?;
+        }
+
         Ok(())
     }
 
@@ -109,8 +135,14 @@ impl Gossip {
 
         let message = Message::new(local_addr, Payload::Application(data));
 
-        // Mark as seen with current timestamp
-        self.seen_messages.insert(message.id, Instant::now());
+        self.seen_messages.insert(
+            message.id,
+            MessageEntry {
+                message: message.clone(),
+                first_seen: Instant::now(),
+                forward_count: 0,
+            },
+        );
 
         self.gossip_message(message).await
     }
@@ -138,6 +170,7 @@ impl Gossip {
         let seen_messages = Arc::clone(&self.seen_messages);
         let message_handler = self.message_handler.clone();
         let config = self.config.clone();
+        let epidemic_config = self.epidemic_config.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
@@ -160,9 +193,13 @@ impl Gossip {
                     }
                 };
 
+                let local_addr = match transport.read().await.local_addr() {
+                    Some(addr) => addr,
+                    None => continue,
+                };
+
                 trace!("Received message from {peer_addr}: {:?}", message.id);
 
-                // Handle protocol messages
                 match &message.payload {
                     Payload::PeerListRequest => {
                         Self::handle_peer_list_request(&transport, peer_addr).await;
@@ -170,17 +207,69 @@ impl Gossip {
                     Payload::PeerListResponse { peers: peer_list } => {
                         Self::handle_peer_list_response(&transport, peer_list).await;
                     }
+                    Payload::AntiEntropyDigest { message_ids } => {
+                        let _ = AntiEntropy::handle_digest(
+                            local_addr,
+                            peer_addr,
+                            message_ids.clone(),
+                            &transport,
+                            &seen_messages,
+                        )
+                        .await;
+                    }
+                    Payload::MessageRequest { ids } => {
+                        let _ = AntiEntropy::handle_message_request(
+                            local_addr,
+                            peer_addr,
+                            ids.clone(),
+                            &transport,
+                            &seen_messages,
+                        )
+                        .await;
+                    }
+                    Payload::MessageResponse { messages: msgs } => {
+                        AntiEntropy::handle_message_response(
+                            msgs.clone(),
+                            &seen_messages,
+                            &message_handler,
+                        );
+                    }
                     Payload::Application(data) => {
                         if seen_messages.contains_key(&message.id) {
                             trace!("Duplicate message {}, ignoring", message.id);
                             continue;
                         }
-                        seen_messages.insert(message.id, Instant::now());
+
+                        seen_messages.insert(
+                            message.id,
+                            MessageEntry {
+                                message: message.clone(),
+                                first_seen: Instant::now(),
+                                forward_count: 0,
+                            },
+                        );
+
                         if let Some(ref handler) = message_handler {
                             handler(message.id.origin, data.clone());
                         }
 
                         if message.ttl > 1 {
+                            if !epidemic_config.should_forward() {
+                                trace!("Epidemic broadcast: not forwarding message {}", message.id);
+                                continue;
+                            }
+
+                            if let Some(mut entry) = seen_messages.get_mut(&message.id) {
+                                if entry.forward_count >= epidemic_config.max_forwards {
+                                    trace!(
+                                        "Message {} reached max forwards ({})",
+                                        message.id, epidemic_config.max_forwards
+                                    );
+                                    continue;
+                                }
+                                entry.forward_count += 1;
+                            }
+
                             let mut new_message = message.clone();
                             new_message.decrement_ttl();
                             let _ = Self::gossip_to_random_peers(
@@ -246,14 +335,28 @@ impl Gossip {
                         break;
                     }
                     _ = ticker.tick() => {
-                        let stale_peers = peers
-                            .iter()
-                            .filter(|entry| entry.value().info.is_stale(timeout))
-                            .map(|entry| *entry.key())
-                            .collect::<Vec<PeerId>>();
+                        let mut peers_to_mark_stale = Vec::new();
+                        let mut peers_to_disconnect = Vec::new();
 
-                        for peer_id in stale_peers {
-                            info!("Removing stale peer {peer_id}");
+                        for entry in peers.iter() {
+                            let peer_info = &entry.value().info;
+
+                            if peer_info.should_disconnect() {
+                                peers_to_disconnect.push(*entry.key());
+                            } else if peer_info.is_stale(timeout) && peer_info.state != PeerState::Stale {
+                                peers_to_mark_stale.push(*entry.key());
+                            }
+                        }
+
+                        for peer_id in peers_to_mark_stale {
+                            if let Some(mut peer) = peers.get_mut(&peer_id) {
+                                peer.info.mark_stale();
+                                debug!("Marked peer {peer_id} as stale");
+                            }
+                        }
+
+                        for peer_id in peers_to_disconnect {
+                            info!("Disconnecting unhealthy peer {peer_id}");
                             peers.remove(&peer_id);
                         }
                     }
@@ -279,7 +382,7 @@ impl Gossip {
                         let now = Instant::now();
                         let stale_messages: Vec<MessageId> = seen_messages
                             .iter()
-                            .filter(|entry| now.duration_since(*entry.value()) > ttl)
+                            .filter(|entry| now.duration_since(entry.value().first_seen) > ttl)
                             .map(|entry| *entry.key())
                             .collect();
 
