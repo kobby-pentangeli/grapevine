@@ -75,8 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fanout(args.fanout)
         .max_peers(args.max_peers);
 
-    for peer in args.bootstrap_peers {
-        builder = builder.add_bootstrap_peer(peer);
+    for peer in &args.bootstrap_peers {
+        builder = builder.add_bootstrap_peer(*peer);
     }
 
     let config = builder.build()?;
@@ -88,12 +88,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     node.start().await?;
 
     let local_addr = node.local_addr().await.expect("No local address");
-    info!("Grapevine node started on {local_addr}");
+
+    println!();
+    println!("┌─────────────────────────────────────────┐");
+    println!("│   Grapevine Node Started Successfully   │");
+    println!("└─────────────────────────────────────────┘");
+    println!("  Listening on: {}", local_addr);
+    println!("  Gossip interval: {}s", args.gossip_interval);
+    println!("  Fanout: {}", args.fanout);
+    println!("  Max peers: {}", args.max_peers);
+    if !args.bootstrap_peers.is_empty() {
+        println!("  Bootstrap peers: {}", args.bootstrap_peers.len());
+    }
+    println!();
+    println!("Press Ctrl+C to shutdown");
+    println!();
+
+    info!("Node initialized and ready");
+
     let node_clone = node.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             interval.tick().await;
+            let peers = node_clone.peers().await;
+            if !peers.is_empty() {
+                info!("Connected to {} peer(s)", peers.len());
+            }
             let message = format!("Heartbeat from {local_addr}");
             if let Err(e) = node_clone.broadcast(Bytes::from(message)).await {
                 tracing::error!("Failed to broadcast: {e}");
@@ -102,9 +123,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     tokio::signal::ctrl_c().await?;
-    info!("Shutting down...");
+    println!();
+    info!("Received shutdown signal, gracefully shutting down...");
     node.shutdown().await?;
-    info!("Goodbye!");
+    info!("Node shutdown complete. Goodbye!");
 
     Ok(())
 }

@@ -86,12 +86,18 @@ impl Node {
     }
 
     /// Broadcast a message to the network.
+    ///
+    /// Messages are propagated using epidemic broadcast with configurable
+    /// forward probability and anti-entropy for reliability.
     pub async fn broadcast(&self, data: impl Into<Bytes>) -> Result<()> {
         let protocol = self.protocol.read().await;
         protocol.broadcast(data.into()).await
     }
 
     /// Set a handler for received application messages.
+    ///
+    /// The handler is called for each received application message with the
+    /// originating peer address and message payload.
     pub async fn on_message<F>(&self, handler: F)
     where
         F: Fn(SocketAddr, Bytes) + Send + Sync + 'static,
@@ -113,6 +119,10 @@ impl Node {
     }
 
     /// Shutdown the node gracefully.
+    ///
+    /// This sends goodbye messages to all connected peers, stops all background
+    /// tasks, and cleans up resources. The shutdown process typically completes
+    /// within 500ms.
     pub async fn shutdown(&self) -> Result<()> {
         let protocol = self.protocol.read().await;
         protocol.shutdown().await?;

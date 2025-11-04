@@ -17,14 +17,9 @@ async-trait = "0.1.89"
 tokio = { version = "1.42", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 
-# Networking
-quinn = { version = "0.11", optional = true }  # QUIC support
-rustls = { version = "0.23", optional = true }
-
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3"
-rmp-serde = { version = "1.3", optional = true }   # MessagePack
 
 # CLI (gossip client binary)
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -35,20 +30,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 thiserror = "2.0"
-anyhow = "1.0"
 
 # Utilities
 bytes = { version = "1.9", features = ["serde"] }
 rand = "0.8"
-petname = "2.0"
 dashmap = "6.1"
-parking_lot = "0.12"
 futures = "0.3"
 
-# Configuration
-serde_yaml = { version = "0.9.33", optional = true }
-serde_json = { version = "1.0", optional = true }
-toml = { version = "0.9", optional = true }
 
 # Crypto (optional)
 blake3 = { version = "1.5", optional = true }
@@ -63,16 +51,11 @@ wiremock = "0.6"
 assert_matches = "1.5"
 test-log = "0.2"
 tracing-test = "0.2"
+serde_json = "1.0"
 
 [features]
-default = ["json-config"]
-full = ["quic", "crypto", "all-formats"]
-quic = ["dep:quinn", "dep:rustls"]
+default = []
 crypto = ["dep:blake3", "dep:ed25519-dalek"]
-json-config = ["dep:serde_json"]
-yaml-config = ["dep:serde_yaml"]
-toml-config = ["dep:toml"]
-all-formats = ["json-config", "yaml-config", "toml-config", "dep:rmp-serde"]
 
 [[bin]]
 name = "grapevine"

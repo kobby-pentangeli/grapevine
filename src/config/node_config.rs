@@ -60,14 +60,6 @@ pub struct NodeConfig {
 pub enum TransportConfig {
     /// TCP transport
     Tcp,
-    /// QUIC transport (requires 'quic' feature)
-    #[cfg(feature = "quic")]
-    Quic {
-        /// Path to certificate file
-        cert_path: Option<String>,
-        /// Path to private key file
-        key_path: Option<String>,
-    },
 }
 
 impl Default for NodeConfig {
