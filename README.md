@@ -4,14 +4,16 @@
 [![Documentation](https://docs.rs/grapevine/badge.svg)](https://docs.rs/grapevine)
 [![License](https://img.shields.io/crates/l/grapevine.svg)](https://github.com/kobby-pentangeli/grapevine#license)
 
-A modern, asynchronous peer-to-peer gossip protocol library for Rust.
+A modern, asynchronous peer-to-peer gossip protocol library and application.
 
 ## Features
 
 - **Async/await** - Built on Tokio for high-performance async I/O
-- **Pluggable transports** - TCP by default, QUIC support via feature flag
+- **Epidemic broadcast** - Probabilistic message forwarding for efficient network coverage
+- **Anti-entropy** - Periodic synchronization ensures eventual consistency
+- **Rate limiting** - Per-peer token bucket rate limiting prevents DoS attacks
 - **Highly configurable** - Fine-tune gossip parameters for your use case
-- **Secure** - Optional message signing and encryption
+- **Zero unsafe code** - Memory safe and thread safe
 
 ## Quick Start
 
@@ -100,40 +102,22 @@ let config = NodeConfigBuilder::new()
 
 ## Feature Flags
 
-- `quic` - Enable QUIC transport support
-- `crypto` - Enable message signing and verification
-- `json-config` - JSON configuration file support (default)
-- `yaml-config` - YAML configuration file support
-- `toml-config` - TOML configuration file support
-- `full` - Enable all features
+- `crypto` - Enable message signing and verification (deferred to `v1.1`)
+
+Note: QUIC transport support is planned for `v1.1+`
 
 ## Architecture
 
 Grapevine implements a push-based gossip protocol with the following components:
 
-- **Epidemic Broadcast**: Probabilistic message dissemination for efficient network coverage
-- **Anti-Entropy**: Periodic synchronization to ensure eventual consistency
-- **Peer Management**: Automatic peer discovery and health monitoring
-- **Message Deduplication**: Efficient tracking of seen messages
-- **Configurable Fan-out**: Control gossip spread vs. network load
+- **Epidemic Broadcast**: Probabilistic message forwarding (default 70% probability, max 5 forwards)
+- **Anti-Entropy**: Periodic digest exchange and repair (every 30s) ensures eventual consistency
+- **Peer Management**: Automatic health monitoring with state machine (Connecting => Connected => Stale => Disconnected)
+- **Rate Limiting**: Per-peer token bucket (100 capacity, 50 tokens/sec) prevents DoS attacks
+- **Message Deduplication**: Time-based eviction (5 minute TTL) prevents duplicates
+- **Graceful Shutdown**: Phased shutdown with goodbye notifications to peers
 
 See [Architecture Documentation](docs/architecture.md) for details.
-
-## Performance
-
-Benchmarks on Apple M1 Pro:
-
-```bash
-broadcast_10_nodes      time:   [1.23 ms 1.25 ms 1.27 ms]
-broadcast_50_nodes      time:   [4.56 ms 4.61 ms 4.67 ms]
-broadcast_100_nodes     time:   [8.12 ms 8.21 ms 8.31 ms]
-```
-
-Run benchmarks yourself:
-
-```bash
-cargo bench
-```
 
 ## Testing
 

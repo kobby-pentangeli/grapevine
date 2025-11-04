@@ -7,7 +7,7 @@
 //! # Features
 //!
 //! - **Async/await**: Built on Tokio for efficient asynchronous I/O
-//! - **Flexible transport**: TCP by default, QUIC optional
+//! - **Flexible transport**: TCP by default, QUIC [scheduled for v1.1+]
 //! - **Configurable**: Extensive configuration options
 //!
 //! # Example
