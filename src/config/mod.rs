@@ -1,8 +1,10 @@
 //! Configuration types and builders for Grapevine nodes.
 
 pub mod node_config;
+pub mod rate_limiter;
 
 pub use node_config::{NodeConfig, NodeConfigBuilder, TransportConfig};
+pub use rate_limiter::{RateLimitConfig, RateLimiter};
 
 /// Serde helper for Duration serialization.
 pub mod serde_duration {

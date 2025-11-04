@@ -47,7 +47,14 @@ impl Gossip {
     /// Create a new gossip protocol instance.
     pub fn new(config: NodeConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(16);
-        let transport = Arc::new(RwLock::new(TcpTransport::new()));
+
+        let mut transport = TcpTransport::new();
+        if config.rate_limit.enabled {
+            transport =
+                transport.set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate);
+        }
+        let transport = Arc::new(RwLock::new(transport));
+
         let seen_messages = Arc::new(DashMap::new());
 
         let anti_entropy = if config.anti_entropy.enabled {
@@ -157,10 +164,42 @@ impl Gossip {
         self.transport.read().await.peers()
     }
 
-    /// Shutdown the node.
+    /// Shutdown the node gracefully.
     pub async fn shutdown(&self) -> Result<()> {
+        info!("Initiating graceful shutdown");
+
+        let local_addr = self.transport.read().await.local_addr();
+        if let Some(addr) = local_addr {
+            let goodbye = Message::new(
+                addr,
+                Payload::Goodbye {
+                    reason: "Normal shutdown".to_string(),
+                },
+            );
+
+            let peer_addrs = self.transport.read().await.peers();
+            debug!("Sending goodbye to {} peers", peer_addrs.len());
+
+            let transport_guard = self.transport.read().await;
+            for peer_addr in peer_addrs {
+                if let Err(e) = transport_guard.send(peer_addr, goodbye.clone()).await {
+                    debug!("Failed to send goodbye to {peer_addr}: {e}");
+                }
+            }
+        }
+
+        debug!("Broadcasting shutdown signal");
         let _ = self.shutdown_tx.send(());
-        sleep(Duration::from_millis(100)).await;
+
+        sleep(Duration::from_millis(500)).await;
+
+        debug!("Clearing peer list");
+        self.peers.clear();
+
+        debug!("Clearing message cache");
+        self.seen_messages.clear();
+
+        info!("Graceful shutdown complete");
         Ok(())
     }
 
@@ -233,6 +272,17 @@ impl Gossip {
                             &seen_messages,
                             &message_handler,
                         );
+                    }
+                    Payload::Goodbye { reason } => {
+                        info!("Peer {peer_addr} is leaving: {reason}");
+                        if let Some(peer_id) = peers
+                            .iter()
+                            .find(|p| p.value().id().0 == peer_addr)
+                            .map(|p| *p.key())
+                        {
+                            peers.remove(&peer_id);
+                            debug!("Removed peer {peer_addr} from peer list");
+                        }
                     }
                     Payload::Application(data) => {
                         if seen_messages.contains_key(&message.id) {

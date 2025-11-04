@@ -45,8 +45,8 @@ pub mod transport;
 pub use core::{Message, MessageId, Node, Payload, Peer, PeerId, PeerInfo, PeerState};
 
 pub use codec::MessageCodec;
-pub use config::{NodeConfig, NodeConfigBuilder, TransportConfig};
+pub use config::{NodeConfig, NodeConfigBuilder, RateLimitConfig, RateLimiter, TransportConfig};
 pub use error::{Error, Result};
-pub use protocol::Gossip;
+pub use protocol::{AntiEntropy, AntiEntropyConfig, EpidemicConfig, Gossip};
 pub use transport::Transport;
 pub use transport::tcp::TcpTransport;

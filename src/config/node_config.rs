@@ -5,9 +5,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::anti_entropy::AntiEntropyConfig;
-use crate::protocol::epidemic::EpidemicConfig;
-use crate::{Error, Result};
+use super::RateLimitConfig;
+use crate::{AntiEntropyConfig, EpidemicConfig, Error, Result};
 
 /// Configuration for a Grapevine node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +43,9 @@ pub struct NodeConfig {
 
     /// Epidemic broadcast configuration
     pub epidemic: EpidemicConfig,
+
+    /// Rate limiting configuration
+    pub rate_limit: RateLimitConfig,
 
     /// Enable message signing (requires 'crypto' feature)
     #[cfg(feature = "crypto")]
@@ -82,6 +84,7 @@ impl Default for NodeConfig {
             message_dedup_ttl: Duration::from_secs(300), // 5 minutes
             anti_entropy: AntiEntropyConfig::default(),
             epidemic: EpidemicConfig::default(),
+            rate_limit: RateLimitConfig::default(),
             #[cfg(feature = "crypto")]
             enable_signing: false,
             transport: TransportConfig::Tcp,
@@ -173,6 +176,12 @@ impl NodeConfigBuilder {
         self
     }
 
+    /// Set rate limiting configuration.
+    pub fn rate_limit(mut self, config: RateLimitConfig) -> Self {
+        self.config.rate_limit = config;
+        self
+    }
+
     /// Enable message signing.
     #[cfg(feature = "crypto")]
     pub fn enable_signing(mut self, enable: bool) -> Self {
@@ -201,6 +210,35 @@ impl NodeConfigBuilder {
         }
         if self.config.max_message_size == 0 {
             return Err(Error::Config("max_message_size must be > 0".into()));
+        }
+        if self.config.fanout > self.config.max_peers {
+            return Err(Error::Config("fanout cannot exceed max_peers".into()));
+        }
+        if self.config.gossip_interval < Duration::from_secs(1) {
+            return Err(Error::Config("gossip_interval must be >= 1 second".into()));
+        }
+        if self.config.gossip_interval > Duration::from_secs(3600) {
+            return Err(Error::Config("gossip_interval must be <= 1 hour".into()));
+        }
+        if self.config.peer_timeout < Duration::from_secs(5) {
+            return Err(Error::Config("peer_timeout must be >= 5 seconds".into()));
+        }
+        if self.config.connection_timeout < Duration::from_secs(1) {
+            return Err(Error::Config(
+                "connection_timeout must be >= 1 second".into(),
+            ));
+        }
+        if self.config.rate_limit.enabled {
+            if self.config.rate_limit.capacity == 0 {
+                return Err(Error::Config(
+                    "rate_limit capacity must be > 0 when enabled".into(),
+                ));
+            }
+            if self.config.rate_limit.refill_rate == 0 {
+                return Err(Error::Config(
+                    "rate_limit refill_rate must be > 0 when enabled".into(),
+                ));
+            }
         }
         Ok(())
     }

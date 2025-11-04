@@ -143,6 +143,12 @@ pub enum Payload {
         /// The requested messages
         messages: Vec<Message>,
     },
+
+    /// Graceful shutdown notification
+    Goodbye {
+        /// Reason for departure
+        reason: String,
+    },
 }
 
 impl Payload {

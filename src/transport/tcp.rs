@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::{debug, error, info, warn};
 
-use crate::{Error, Message, MessageCodec, Peer, PeerId, Result};
+use crate::{Error, Message, MessageCodec, Peer, PeerId, RateLimiter, Result};
 
 /// TCP transport for gossip messages.
 pub struct TcpTransport {
@@ -27,6 +27,9 @@ pub struct TcpTransport {
 
     /// Channel for sending messages (cloned to connection handlers)
     message_tx: UnboundedSender<(SocketAddr, Message)>,
+
+    /// Rate limiting configuration
+    rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 }
 
 impl TcpTransport {
@@ -39,7 +42,17 @@ impl TcpTransport {
             peers: Arc::new(DashMap::new()),
             message_rx: Arc::new(Mutex::new(message_rx)),
             message_tx,
+            rate_limiter: None,
         }
+    }
+
+    /// Enable rate limiting with the given configuration.
+    pub fn set_rate_limit(mut self, capacity: u32, refill_rate: u32) -> Self {
+        self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(
+            capacity,
+            refill_rate,
+        ))));
+        self
     }
 
     /// Start listening on the given address.
@@ -55,6 +68,7 @@ impl TcpTransport {
 
         let peers = Arc::clone(&self.peers);
         let message_tx = self.message_tx.clone();
+        let rate_limiter = self.rate_limiter.clone();
 
         tokio::spawn(async move {
             loop {
@@ -66,6 +80,7 @@ impl TcpTransport {
                             peer_addr,
                             Arc::clone(&peers),
                             message_tx.clone(),
+                            rate_limiter.clone(),
                         );
                     }
                     Err(e) => {
@@ -96,6 +111,7 @@ impl TcpTransport {
             addr,
             Arc::clone(&self.peers),
             self.message_tx.clone(),
+            self.rate_limiter.clone(),
         );
 
         let max_wait = 50;
@@ -150,6 +166,7 @@ impl TcpTransport {
         peer_addr: SocketAddr,
         peers: Arc<DashMap<SocketAddr, Peer>>,
         message_tx: UnboundedSender<(SocketAddr, Message)>,
+        rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
     ) {
         tokio::spawn(async move {
             let (reader, writer) = stream.into_split();
@@ -186,6 +203,16 @@ impl TcpTransport {
                     while let Some(result) = stream.next().await {
                         match result {
                             Ok(message) => {
+                                if let Some(ref limiter) = rate_limiter {
+                                    let allowed = limiter.lock().await.check_rate_limit(peer_addr);
+                                    if !allowed {
+                                        warn!(
+                                            "Rate limit exceeded for peer {peer_addr}, dropping message"
+                                        );
+                                        continue;
+                                    }
+                                }
+
                                 if message_tx.send((peer_addr, message)).is_err() {
                                     warn!("Message channel closed");
                                     break;
