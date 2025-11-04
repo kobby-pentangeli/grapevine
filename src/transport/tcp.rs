@@ -130,7 +130,7 @@ impl TcpTransport {
 
     /// Send a message to a peer.
     pub async fn send(&self, peer: SocketAddr, message: Message) -> Result<()> {
-        let data = bincode::serialize(&message)?;
+        let data = bincode::serde::encode_to_vec(&message, bincode::config::standard())?;
 
         if let Some(conn) = self.peers.get_mut(&peer).as_deref_mut() {
             conn.send(Bytes::from(data))
@@ -181,8 +181,11 @@ impl TcpTransport {
                 let mut sink = FramedWrite::new(writer, MessageCodec::new());
                 tokio::spawn(async move {
                     while let Some(data) = rx.recv().await {
-                        match bincode::deserialize::<Message>(&data) {
-                            Ok(message) => {
+                        match bincode::serde::decode_from_slice::<Message, _>(
+                            &data,
+                            bincode::config::standard(),
+                        ) {
+                            Ok((message, _)) => {
                                 if let Err(e) = futures::SinkExt::send(&mut sink, message).await {
                                     error!("Failed to send to {peer_addr}: {e}");
                                     break;

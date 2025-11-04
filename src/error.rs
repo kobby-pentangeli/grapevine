@@ -36,7 +36,7 @@ pub enum Error {
 
     /// Serialization error.
     #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
+    Serialization(#[from] bincode::error::EncodeError),
 
     /// Deserialization error.
     #[error("Deserialization failed: {0}")]
@@ -134,9 +134,11 @@ mod tests {
     #[test]
     fn error_from_bincode() {
         let bad_data: &[u8] = &[255, 255, 255];
-        let result: Result<u32> = bincode::deserialize(bad_data).map_err(Error::from);
+        let result: Result<(u32, usize)> =
+            bincode::serde::decode_from_slice(bad_data, bincode::config::standard())
+                .map_err(|e| Error::Deserialization(e.to_string()));
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::Serialization(_)));
+        assert!(matches!(result.unwrap_err(), Error::Deserialization(_)));
     }
 
     #[test]

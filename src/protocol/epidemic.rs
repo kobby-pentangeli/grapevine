@@ -18,8 +18,8 @@ pub struct EpidemicConfig {
 impl EpidemicConfig {
     /// Determine if message should be forwarded.
     pub fn should_forward(&self) -> bool {
-        let mut rng = rand::thread_rng();
-        rng.r#gen::<f64>() < self.forward_probability
+        let mut rng = rand::rng();
+        rng.random::<f64>() < self.forward_probability
     }
 }
 

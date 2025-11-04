@@ -64,8 +64,8 @@ impl Decoder for MessageCodec {
         src.advance(4);
 
         let data = src.split_to(length);
-        bincode::deserialize(&data)
-            .map(Some)
+        bincode::serde::decode_from_slice(&data, bincode::config::standard())
+            .map(|(msg, _)| Some(msg))
             .map_err(|e| Error::Deserialization(format!("Failed to deserialize message: {e}")))
     }
 }
@@ -74,7 +74,7 @@ impl Encoder<Message> for MessageCodec {
     type Error = Error;
 
     fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<()> {
-        let data = bincode::serialize(&item)?;
+        let data = bincode::serde::encode_to_vec(&item, bincode::config::standard())?;
 
         let length = data.len();
         if length > self.max_frame_size {

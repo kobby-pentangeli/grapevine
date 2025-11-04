@@ -244,8 +244,10 @@ mod tests {
         let data = Bytes::from("hello");
         let message = Message::new(addr, Payload::Application(data));
 
-        let serialized = bincode::serialize(&message).unwrap();
-        let deserialized: Message = bincode::deserialize(&serialized).unwrap();
+        let serialized =
+            bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+        let (deserialized, _): (Message, _) =
+            bincode::serde::decode_from_slice(&serialized, bincode::config::standard()).unwrap();
 
         assert_eq!(message.id, deserialized.id);
         assert_eq!(message.ttl, deserialized.ttl);

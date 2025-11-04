@@ -152,7 +152,7 @@ impl AntiEntropy {
                 }
 
                 let selected_peers: Vec<SocketAddr> = {
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
                     peer_addrs.shuffle(&mut rng);
                     peer_addrs.into_iter().take(config.fanout).collect()
                 };
