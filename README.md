@@ -134,25 +134,16 @@ RUST_LOG=debug cargo test
 
 ## CLI Usage
 
-Grapevine includes a standalone binary for running gossip nodes:
+Grapevine includes a standalone binary for running gossip nodes. For a complete guide on starting nodes, joining networks, broadcasting messages, and more, see the **[CLI Usage Guide](docs/client.md)**.
+
+### Environment Variables
+
+For a straightforward run, first copy `.env.example` to `.env` and customize:
 
 ```bash
-# Run with default settings (listens on 127.0.0.1:8000)
+cp .env.example .env
+# Edit .env with your configuration
 cargo run --bin grapevine
-
-# Run with custom host and port
-cargo run --bin grapevine -- --host 0.0.0.0 --port 8001
-
-# Connect to bootstrap peers
-cargo run --bin grapevine -- --port 8002 \
-  --peer 127.0.0.1:8000 \
-  --peer 127.0.0.1:8001
-
-# Configure via environment variables (see .env.example)
-BIND_HOST=0.0.0.0 BIND_PORT=9000 cargo run --bin grapevine
-
-# Set log level
-cargo run --bin grapevine -- --log-level debug
 ```
 
 ### CLI Arguments
@@ -167,15 +158,42 @@ cargo run --bin grapevine -- --log-level debug
 -l, --log-level <LEVEL>          Log level (trace, debug, info, warn, error) [env: RUST_LOG] [default: info]
 ```
 
-### Environment Variables
-
-Copy `.env.example` to `.env` and customize:
+### Common Operations
 
 ```bash
-cp .env.example .env
-# Edit .env with your configuration
+# Start a seed node
 cargo run --bin grapevine
+
+# Join the network from another terminal
+cargo run --bin grapevine -- --port 8001 --peer 127.0.0.1:8000
+
+# Join with multiple bootstrap peers
+cargo run --bin grapevine -- --port 8002 \
+  --peer 127.0.0.1:8000,127.0.0.1:8001
+
+# Start with custom configuration
+cargo run --bin grapevine -- \
+  --host 0.0.0.0 \
+  --port 9000 \
+  --fanout 5 \
+  --gossip-interval 3
+
+# Use environment variables
+BIND_HOST=0.0.0.0 BIND_PORT=9000 cargo run --bin grapevine
+
+# Enable debug logging
+cargo run --bin grapevine -- --log-level debug
+
+# Graceful shutdown
+# Press Ctrl+C to send goodbye messages and cleanly exit
 ```
+
+See **[docs/client.md](docs/client.md)** for:
+
+- Step-by-step setup instructions
+- Multi-node cluster examples
+- Network tuning parameters
+- Troubleshooting common issues
 
 ## Examples
 
