@@ -29,7 +29,7 @@ Start your first node and begin sending messages immediately:
 
 ```bash
 # Terminal 1: Start seed node
-cargo run --bin grapevine
+cargo run
 ```
 
 You'll see the interactive interface:
@@ -53,7 +53,7 @@ In another terminal, join the network:
 
 ```bash
 # Terminal 2: Join the network
-cargo run --bin grapevine -- --port 8001 --peer 127.0.0.1:8000
+cargo run -- --port 8001 --peer 127.0.0.1:8000
 ```
 
 Now you can exchange messages interactively!
@@ -100,13 +100,13 @@ The first node in a network acts as the **seed node** that other nodes connect t
 
 ```bash
 # Start on default port (8000)
-cargo run --bin grapevine
+cargo run
 
 # Start on custom port
-cargo run --bin grapevine -- --port 9000
+cargo run -- --port 9000
 
 # Bind to all interfaces (for remote connections)
-cargo run --bin grapevine -- --host 0.0.0.0 --port 9000
+cargo run -- --host 0.0.0.0 --port 9000
 ```
 
 The seed node will display:
@@ -132,10 +132,10 @@ To join an existing network, specify one or more **bootstrap peers**:
 
 ```bash
 # Join with single bootstrap peer
-cargo run --bin grapevine -- --port 8001 --peer 127.0.0.1:8000
+cargo run -- --port 8001 --peer 127.0.0.1:8000
 
 # Join with multiple bootstrap peers (comma-separated)
-cargo run --bin grapevine -- --port 8002 \
+cargo run -- --port 8002 \
   --peer 127.0.0.1:8000,127.0.0.1:8001
 ```
 
@@ -160,7 +160,7 @@ export FANOUT=3
 export MAX_PEERS=50
 export RUST_LOG=info
 
-cargo run --bin grapevine
+cargo run
 ```
 
 Or use a `.env` file:
@@ -178,7 +178,7 @@ RUST_LOG=info
 EOF
 
 # Start node (automatically reads .env)
-cargo run --bin grapevine
+cargo run
 ```
 
 ## Sending Messages

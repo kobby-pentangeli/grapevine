@@ -143,7 +143,7 @@ For a straightforward run, first copy `.env.example` to `.env` and customize:
 ```bash
 cp .env.example .env
 # Edit .env with your configuration
-cargo run --bin grapevine
+cargo run
 ```
 
 ### CLI Arguments
@@ -162,27 +162,27 @@ cargo run --bin grapevine
 
 ```bash
 # Start a seed node
-cargo run --bin grapevine
+cargo run
 
 # Join the network from another terminal
-cargo run --bin grapevine -- --port 8001 --peer 127.0.0.1:8000
+cargo run -- --port 8001 --peer 127.0.0.1:8000
 
 # Join with multiple bootstrap peers
-cargo run --bin grapevine -- --port 8002 \
+cargo run -- --port 8002 \
   --peer 127.0.0.1:8000,127.0.0.1:8001
 
 # Start with custom configuration
-cargo run --bin grapevine -- \
+cargo run -- \
   --host 0.0.0.0 \
   --port 9000 \
   --fanout 5 \
   --gossip-interval 3
 
 # Use environment variables
-BIND_HOST=0.0.0.0 BIND_PORT=9000 cargo run --bin grapevine
+BIND_HOST=0.0.0.0 BIND_PORT=9000 cargo run
 
 # Enable debug logging
-cargo run --bin grapevine -- --log-level debug
+cargo run -- --log-level debug
 
 # Graceful shutdown
 # Press Ctrl+C to send goodbye messages and cleanly exit
