@@ -1,5 +1,6 @@
 //! Core gossip protocol engine.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,6 +31,12 @@ pub struct Gossip {
     /// Seen messages with full message data and metadata
     seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
 
+    /// Maps canonical peer addresses (listening addresses) to connection addresses (ephemeral ports).
+    /// When peer A connects to peer B, B sees the connection from an ephemeral port, but messages
+    /// contain A's listening address in message.id.origin. This map allows us to look up the
+    /// correct connection to use when sending direct messages.
+    canonical_addrs: Arc<DashMap<SocketAddr, SocketAddr>>,
+
     /// Application message handler
     message_handler: Option<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
 
@@ -54,8 +61,8 @@ impl Gossip {
                 transport.set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate);
         }
         let transport = Arc::new(RwLock::new(transport));
-
         let seen_messages = Arc::new(DashMap::new());
+        let epidemic_config = config.epidemic.clone();
 
         let anti_entropy = if config.anti_entropy.enabled {
             Some(Arc::new(AntiEntropy::new(
@@ -68,14 +75,15 @@ impl Gossip {
         };
 
         Self {
-            epidemic_config: config.epidemic.clone(),
             config,
             transport,
             peers: Arc::new(DashMap::new()),
             seen_messages,
+            canonical_addrs: Arc::new(DashMap::new()),
             message_handler: None,
             shutdown_tx,
             anti_entropy,
+            epidemic_config,
         }
     }
 
@@ -124,6 +132,12 @@ impl Gossip {
         let local_addr = transport
             .local_addr()
             .ok_or_else(|| Error::internal("No local address"))?;
+
+        // Send immediate heartbeat to establish canonical address mapping
+        let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
+        transport.send(addr, heartbeat).await?;
+
+        // Request peer list
         let message = Message::new(local_addr, Payload::PeerListRequest);
         transport.send(addr, message).await?;
 
@@ -154,14 +168,79 @@ impl Gossip {
         self.gossip_message(message).await
     }
 
+    /// Send a direct message to a specific peer.
+    ///
+    /// The `peer` parameter should be the peer's canonical listening address.
+    /// This method will automatically resolve it to the actual connection address.
+    pub async fn send_to_peer(&self, peer: SocketAddr, data: Bytes) -> Result<()> {
+        let transport = self.transport.read().await;
+
+        let local_addr = transport
+            .local_addr()
+            .ok_or_else(|| Error::internal("No local address"))?;
+
+        // Resolve canonical address to connection address.
+        // If the peer is us (we're listening on `peer`), use peer directly.
+        // Otherwise, look up the connection address from our canonical mapping.
+        let connection_addr = self
+            .canonical_addrs
+            .get(&peer)
+            .map(|entry| *entry.value())
+            .unwrap_or(peer);
+
+        // Check if peer is connected using the transport's peer list
+        let connected_peers = transport.peers();
+        if !connected_peers.contains(&connection_addr) {
+            return Err(Error::PeerNotFound(peer));
+        }
+
+        let message = Message::new(
+            local_addr,
+            Payload::DirectMessage {
+                recipient: peer,
+                data,
+            },
+        );
+
+        // Mark as seen to avoid processing it if it comes back
+        self.seen_messages.insert(
+            message.id,
+            MessageEntry {
+                message: message.clone(),
+                first_seen: Instant::now(),
+                forward_count: 0,
+            },
+        );
+
+        // Send to the connection address, not the canonical address
+        transport.send(connection_addr, message).await
+    }
+
     /// Get local address.
     pub async fn local_addr(&self) -> Option<SocketAddr> {
         self.transport.read().await.local_addr()
     }
 
-    /// Get list of connected peers.
+    /// Get list of connected peers using their canonical (listening) addresses.
+    ///
+    /// This returns the peers' actual listening addresses rather than the ephemeral
+    /// connection ports. Use these addresses for sending direct messages.
     pub async fn peer_list(&self) -> Vec<SocketAddr> {
-        self.transport.read().await.peers()
+        let connection_addrs = self.transport.read().await.peers();
+
+        // Build reverse mapping: connection_addr -> canonical_addr
+        let mut reverse_map: HashMap<SocketAddr, SocketAddr> = HashMap::new();
+
+        for entry in self.canonical_addrs.iter() {
+            let (canonical, connection) = (*entry.key(), *entry.value());
+            reverse_map.insert(connection, canonical);
+        }
+
+        // Return canonical addresses where available, connection addresses otherwise
+        connection_addrs
+            .into_iter()
+            .map(|conn_addr| reverse_map.get(&conn_addr).copied().unwrap_or(conn_addr))
+            .collect()
     }
 
     /// Shutdown the node gracefully.
@@ -207,6 +286,7 @@ impl Gossip {
         let transport = Arc::clone(&self.transport);
         let peers = Arc::clone(&self.peers);
         let seen_messages = Arc::clone(&self.seen_messages);
+        let canonical_addrs = Arc::clone(&self.canonical_addrs);
         let message_handler = self.message_handler.clone();
         let config = self.config.clone();
         let epidemic_config = self.epidemic_config.clone();
@@ -236,6 +316,17 @@ impl Gossip {
                     Some(addr) => addr,
                     None => continue,
                 };
+
+                // Map the canonical address (from message.id.origin) to the connection address (peer_addr).
+                // This allows us to send direct messages using the peer's listening address.
+                // We always create the mapping, even if addresses match (outbound connections).
+                let canonical_addr = message.id.origin;
+                canonical_addrs.insert(canonical_addr, peer_addr);
+                if canonical_addr != peer_addr {
+                    debug!("Mapped canonical {canonical_addr} → connection {peer_addr}");
+                } else {
+                    debug!("Mapped canonical {canonical_addr} → self (outbound connection)");
+                }
 
                 trace!("Received message from {peer_addr}: {:?}", message.id);
 
@@ -274,14 +365,55 @@ impl Gossip {
                         );
                     }
                     Payload::Goodbye { reason } => {
-                        info!("Peer {peer_addr} is leaving: {reason}");
+                        // Use canonical address (listening address) in logs instead of connection address
+                        let canonical_addr = message.id.origin;
+                        info!("Peer {canonical_addr} is leaving: {reason}");
                         if let Some(peer_id) = peers
                             .iter()
                             .find(|p| p.value().id().0 == peer_addr)
                             .map(|p| *p.key())
                         {
                             peers.remove(&peer_id);
-                            debug!("Removed peer {peer_addr} from peer list");
+                            debug!("Removed peer {canonical_addr} from peer list");
+                        }
+                    }
+                    Payload::DirectMessage { recipient, data } => {
+                        // Direct messages are only delivered to the intended recipient
+                        // and are not gossiped to other peers
+                        if seen_messages.contains_key(&message.id) {
+                            trace!("Duplicate direct message {}, ignoring", message.id);
+                            continue;
+                        }
+
+                        // Check if we are the intended recipient
+                        if *recipient == local_addr {
+                            seen_messages.insert(
+                                message.id,
+                                MessageEntry {
+                                    message: message.clone(),
+                                    first_seen: Instant::now(),
+                                    forward_count: 0,
+                                },
+                            );
+
+                            if let Some(ref handler) = message_handler {
+                                handler(message.id.origin, data.clone());
+                            }
+                            debug!("Received direct message from {}", message.id.origin);
+                        } else {
+                            // Not for us, but mark as seen to avoid loops if it comes back
+                            seen_messages.insert(
+                                message.id,
+                                MessageEntry {
+                                    message: message.clone(),
+                                    first_seen: Instant::now(),
+                                    forward_count: 0,
+                                },
+                            );
+                            trace!(
+                                "Direct message {} not for us (intended for {}), dropping",
+                                message.id, recipient
+                            );
                         }
                     }
                     Payload::Application(data) => {

@@ -94,6 +94,24 @@ impl Node {
         protocol.broadcast(data.into()).await
     }
 
+    /// Send a direct message to a specific peer.
+    ///
+    /// Unlike broadcast, direct messages are only delivered to the specified
+    /// recipient and are not propagated through the gossip network.
+    ///
+    /// # Arguments
+    ///
+    /// * `peer` - The recipient's socket address
+    /// * `data` - The message payload
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the peer is not connected or if sending fails.
+    pub async fn send_to_peer(&self, peer: SocketAddr, data: impl Into<Bytes>) -> Result<()> {
+        let protocol = self.protocol.read().await;
+        protocol.send_to_peer(peer, data.into()).await
+    }
+
     /// Set a handler for received application messages.
     ///
     /// The handler is called for each received application message with the

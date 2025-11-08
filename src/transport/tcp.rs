@@ -10,7 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::codec::{FramedRead, FramedWrite};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::{Error, Message, MessageCodec, Peer, PeerId, RateLimiter, Result};
 
@@ -64,7 +64,7 @@ impl TcpTransport {
         let local_addr = listener.local_addr().map_err(Error::Io)?;
         self.local_addr = Some(local_addr);
 
-        info!("TCP transport listening on {local_addr}");
+        debug!("TCP transport listening on {local_addr}");
 
         let peers = Arc::clone(&self.peers);
         let message_tx = self.message_tx.clone();
@@ -104,7 +104,7 @@ impl TcpTransport {
             .await
             .map_err(|e| Error::Connection { addr, source: e })?;
 
-        info!("Connected to peer {addr}");
+        debug!("TCP connection established to {addr}");
 
         Self::handle_connection(
             stream,
@@ -238,7 +238,7 @@ impl TcpTransport {
 
             // Cleanup
             peers.remove(&peer_addr);
-            info!("Disconnected from {peer_addr}");
+            debug!("Connection closed: {peer_addr}");
         });
     }
 }

@@ -149,12 +149,20 @@ pub enum Payload {
         /// Reason for departure
         reason: String,
     },
+
+    /// Direct message to a specific peer (not gossiped)
+    DirectMessage {
+        /// Intended recipient address
+        recipient: SocketAddr,
+        /// Message data
+        data: Bytes,
+    },
 }
 
 impl Payload {
     /// Check if this is a protocol message (vs application message).
     pub fn is_protocol_message(&self) -> bool {
-        !matches!(self, Self::Application(_))
+        !matches!(self, Self::Application(_) | Self::DirectMessage { .. })
     }
 }
 

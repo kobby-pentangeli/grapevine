@@ -1,11 +1,18 @@
-//! Grapevine CLI application.
+//! Grapevine interactive CLI application.
 
+use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use clap::Parser;
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
+use crossterm::terminal::{Clear, ClearType};
+use crossterm::{cursor, execute};
 use grapevine::{Node, NodeConfigBuilder};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::Mutex;
 use tracing::{Level, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -48,6 +55,118 @@ struct Args {
     log_level: String,
 }
 
+/// Parse command from user input
+enum Command {
+    Broadcast(String),
+    Send(SocketAddr, String),
+    Peers,
+    Status,
+    Help,
+    Quit,
+    Unknown(String),
+}
+
+impl Command {
+    fn parse(input: &str) -> Self {
+        let input = input.trim();
+
+        if input.is_empty() {
+            return Command::Unknown(String::new());
+        }
+
+        if !input.starts_with('/') {
+            return Command::Unknown(
+                "Commands must start with '/'. Type /help for available commands.".to_string(),
+            );
+        }
+
+        let parts = input.splitn(3, ' ').collect::<Vec<&str>>();
+        let cmd = parts[0].to_lowercase();
+
+        match cmd.as_str() {
+            "/broadcast" | "/b" => {
+                if parts.len() < 2 {
+                    return Command::Unknown("Usage: /broadcast <message>".to_string());
+                }
+                Command::Broadcast(parts[1..].join(" "))
+            }
+            "/send" | "/s" => {
+                if parts.len() < 3 {
+                    return Command::Unknown("Usage: /send <peer_address> <message>".to_string());
+                }
+                match parts[1].parse::<SocketAddr>() {
+                    Ok(addr) => Command::Send(addr, parts[2].to_string()),
+                    Err(_) => Command::Unknown(format!("Invalid peer address: {}", parts[1])),
+                }
+            }
+            "/peers" | "/p" => Command::Peers,
+            "/status" | "/st" => Command::Status,
+            "/help" | "/h" | "/?" => Command::Help,
+            "/quit" | "/exit" | "/q" => Command::Quit,
+            _ => Command::Unknown(format!(
+                "Unknown command: {cmd}. Type /help for available commands."
+            )),
+        }
+    }
+}
+
+/// Print colored message
+fn print_colored(color: Color, text: &str) {
+    let mut stdout = io::stdout();
+    execute!(stdout, SetForegroundColor(color), Print(text), ResetColor).ok();
+    stdout.flush().ok();
+}
+
+/// Print colored line
+fn println_colored(color: Color, text: &str) {
+    print_colored(color, text);
+    println!();
+}
+
+/// Display welcome banner
+fn display_banner() {
+    println!();
+    println_colored(
+        Color::Cyan,
+        "┌──────────────────────────────────────────────────────────┐",
+    );
+    println_colored(
+        Color::Cyan,
+        "│            Grapevine Interactive Gossip Client           │",
+    );
+    println_colored(
+        Color::Cyan,
+        "└──────────────────────────────────────────────────────────┘",
+    );
+    println!();
+}
+
+/// Display help message
+fn display_help() {
+    println!();
+    println_colored(Color::Yellow, "Available Commands:");
+    println!();
+    println!("  /broadcast <message>  - Broadcast a message to all peers");
+    println!("  /send <peer> <msg>    - Send direct message to specific peer");
+    println!("  /peers                - List connected peers");
+    println!("  /status               - Show node status");
+    println!("  /help                 - Show this help message");
+    println!("  /quit or /exit        - Exit gracefully");
+    println!();
+    println_colored(Color::DarkGrey, "Examples:");
+    println_colored(Color::DarkGrey, "  /broadcast Hello everyone!");
+    println_colored(Color::DarkGrey, "  /send 127.0.0.1:8001 Hi there");
+    println_colored(Color::DarkGrey, "  /peers");
+    println!();
+}
+
+/// Display prompt
+fn display_prompt(local_addr: SocketAddr) {
+    print_colored(Color::Green, &format!("grapevine@{local_addr}"));
+    print_colored(Color::White, "> ");
+    io::stdout().flush().ok();
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
@@ -81,52 +200,155 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = builder.build()?;
     let node = Node::new(config).await?;
-    node.on_message(|origin, data| {
-        info!("Received from {origin}: {data:?}");
+
+    // Set up message handler with thread-safe output
+    let output_lock = Arc::new(Mutex::new(()));
+    let output_lock_clone = Arc::clone(&output_lock);
+
+    node.on_message(move |origin, data| {
+        let output_lock = Arc::clone(&output_lock_clone);
+        tokio::spawn(async move {
+            let _lock = output_lock.lock().await;
+
+            // Clear current line and move to beginning
+            execute!(
+                io::stdout(),
+                cursor::MoveToColumn(0),
+                Clear(ClearType::CurrentLine)
+            )
+            .ok();
+
+            // Print received message
+            print_colored(Color::Blue, "Message received from ");
+            print_colored(Color::Cyan, &origin.to_string());
+            print_colored(Color::Blue, ": ");
+
+            // Try to decode as UTF-8, otherwise show hex
+            match String::from_utf8(data.to_vec()) {
+                Ok(s) => println_colored(Color::White, &s),
+                Err(_) => println_colored(Color::DarkGrey, &format!("{data:?}")),
+            }
+        });
     })
     .await;
+
     node.start().await?;
 
     let local_addr = node.local_addr().await.expect("No local address");
 
-    println!();
-    println!("┌─────────────────────────────────────────┐");
-    println!("│   Grapevine Node Started Successfully   │");
-    println!("└─────────────────────────────────────────┘");
-    println!("  Listening on: {}", local_addr);
-    println!("  Gossip interval: {}s", args.gossip_interval);
-    println!("  Fanout: {}", args.fanout);
-    println!("  Max peers: {}", args.max_peers);
+    // Display banner
+    display_banner();
+
+    println_colored(Color::Green, &format!("Node started on {local_addr}"));
+    println_colored(
+        Color::White,
+        &format!("  Gossip interval: {}s", args.gossip_interval),
+    );
+    println_colored(Color::White, &format!("  Fanout: {}", args.fanout));
+    println_colored(Color::White, &format!("  Max peers: {}", args.max_peers));
     if !args.bootstrap_peers.is_empty() {
-        println!("  Bootstrap peers: {}", args.bootstrap_peers.len());
+        println_colored(
+            Color::White,
+            &format!("  Bootstrap peers: {}", args.bootstrap_peers.len()),
+        );
     }
     println!();
-    println!("Press Ctrl+C to shutdown");
+    println_colored(
+        Color::Yellow,
+        "Type /help for available commands or /quit to exit",
+    );
     println!();
 
-    info!("Node initialized and ready");
+    // Set up stdin reader
+    let stdin = tokio::io::stdin();
+    let mut reader = BufReader::new(stdin);
+    let mut line = String::new();
 
-    let node_clone = node.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
-        loop {
-            interval.tick().await;
-            let peers = node_clone.peers().await;
-            if !peers.is_empty() {
-                info!("Connected to {} peer(s)", peers.len());
-            }
-            let message = format!("Heartbeat from {local_addr}");
-            if let Err(e) = node_clone.broadcast(Bytes::from(message)).await {
-                tracing::error!("Failed to broadcast: {e}");
+    // Main command loop
+    loop {
+        display_prompt(local_addr);
+
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
+            Err(e) => {
+                println_colored(Color::Red, &format!("Error reading input: {e}"));
+                continue;
             }
         }
-    });
 
-    tokio::signal::ctrl_c().await?;
-    println!();
-    info!("Received shutdown signal, gracefully shutting down...");
-    node.shutdown().await?;
-    info!("Node shutdown complete. Goodbye!");
+        let command = Command::parse(&line);
+
+        match command {
+            Command::Broadcast(msg) => match node.broadcast(Bytes::from(msg.clone())).await {
+                Ok(_) => {
+                    println_colored(Color::Green, "✓ Message broadcasted");
+                }
+                Err(e) => {
+                    println_colored(Color::Red, &format!("✗ Broadcast failed: {e}"));
+                }
+            },
+            Command::Send(peer, msg) => {
+                match node.send_to_peer(peer, Bytes::from(msg.clone())).await {
+                    Ok(_) => {
+                        println_colored(Color::Green, &format!("✓ Message sent to {peer}"));
+                    }
+                    Err(e) => {
+                        println_colored(Color::Red, &format!("✗ Send failed: {e}"));
+                    }
+                }
+            }
+            Command::Peers => {
+                let peers = node.peers().await;
+                if peers.is_empty() {
+                    println_colored(Color::Yellow, "No connected peers");
+                } else {
+                    println_colored(Color::Cyan, &format!("Connected peers ({}):", peers.len()));
+                    for peer in peers {
+                        println_colored(Color::White, &format!("  • {peer}"));
+                    }
+                }
+            }
+            Command::Status => {
+                let peers = node.peers().await;
+                let addr = node.local_addr().await;
+
+                println!();
+                println_colored(Color::Cyan, "Node Status:");
+                println_colored(
+                    Color::White,
+                    &format!(
+                        "  Local address: {}",
+                        addr.unwrap_or_else(|| "N/A".parse().unwrap())
+                    ),
+                );
+                println_colored(Color::White, &format!("  Connected peers: {}", peers.len()));
+                println_colored(
+                    Color::White,
+                    &format!("  Gossip interval: {}s", args.gossip_interval),
+                );
+                println_colored(Color::White, &format!("  Fanout: {}", args.fanout));
+                println!();
+            }
+            Command::Help => {
+                display_help();
+            }
+            Command::Quit => {
+                println!();
+                info!("Shutting down gracefully...");
+                node.shutdown().await?;
+                println_colored(Color::Green, "✓ Node shutdown complete. Goodbye!");
+                println!();
+                break;
+            }
+            Command::Unknown(msg) => {
+                if !msg.is_empty() {
+                    println_colored(Color::Red, &format!("✗ {msg}"));
+                }
+            }
+        }
+    }
 
     Ok(())
 }
