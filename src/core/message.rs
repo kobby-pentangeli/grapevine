@@ -244,21 +244,36 @@ mod tests {
             Payload::PeerListResponse { peers: p } => assert_eq!(p, peers),
             _ => panic!("Expected PeerListResponse payload"),
         }
-    }
 
-    #[test]
-    fn message_serialization() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
-        let data = Bytes::from("hello");
-        let message = Message::new(addr, Payload::Application(data));
+        // Payload::DirectMessage
+        let recipient: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+        let data = Bytes::from("private message");
+        let payload = Payload::DirectMessage {
+            recipient,
+            data: data.clone(),
+        };
+        assert!(!payload.is_protocol_message());
+        match payload {
+            Payload::DirectMessage {
+                recipient: r,
+                data: d,
+            } => {
+                assert_eq!(r, recipient);
+                assert_eq!(d, data);
+            }
+            _ => panic!("Expected DirectMessage payload"),
+        }
 
-        let serialized =
-            bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
-        let (deserialized, _): (Message, _) =
-            bincode::serde::decode_from_slice(&serialized, bincode::config::standard()).unwrap();
-
-        assert_eq!(message.id, deserialized.id);
-        assert_eq!(message.ttl, deserialized.ttl);
+        // Payload::Goodbye
+        let reason = "Normal shutdown".to_string();
+        let payload = Payload::Goodbye {
+            reason: reason.clone(),
+        };
+        assert!(payload.is_protocol_message());
+        match payload {
+            Payload::Goodbye { reason: r } => assert_eq!(r, reason),
+            _ => panic!("Expected Goodbye payload"),
+        }
     }
 
     #[test]
@@ -272,6 +287,40 @@ mod tests {
             for j in i + 1..messages.len() {
                 assert_ne!(messages[i].id.sequence, messages[j].id.sequence);
             }
+        }
+    }
+
+    #[test]
+    fn direct_message_serialization() {
+        let sender: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let recipient: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+        let data = Bytes::from("test direct message");
+
+        let message = Message::new(
+            sender,
+            Payload::DirectMessage {
+                recipient,
+                data: data.clone(),
+            },
+        );
+
+        let serialized =
+            bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+        let (deserialized, _): (Message, _) =
+            bincode::serde::decode_from_slice(&serialized, bincode::config::standard()).unwrap();
+
+        assert_eq!(message.id, deserialized.id);
+        assert_eq!(message.ttl, deserialized.ttl);
+
+        match deserialized.payload {
+            Payload::DirectMessage {
+                recipient: r,
+                data: d,
+            } => {
+                assert_eq!(r, recipient);
+                assert_eq!(d, data);
+            }
+            _ => panic!("Expected DirectMessage payload after deserialization"),
         }
     }
 }
