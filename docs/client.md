@@ -10,17 +10,6 @@ Build the Grapevine CLI from source:
 # Clone the repository
 git clone https://github.com/kobby-pentangeli/grapevine
 cd grapevine
-
-# Build the binary
-cargo build --release
-
-# The binary will be at: target/release/grapevine
-```
-
-Or install directly using cargo:
-
-```bash
-cargo install grapevine
 ```
 
 ## Quick Start
@@ -163,11 +152,13 @@ export RUST_LOG=info
 cargo run
 ```
 
-Or use a `.env` file:
+Or copy `.env.example` to `.env` and customize:
 
 ```bash
-# Create .env file
-cat > .env <<EOF
+# Copy
+cp .env.example .env
+
+# Edit .env with your configuration
 BIND_HOST=0.0.0.0
 BIND_PORT=9000
 BOOTSTRAP_PEERS=127.0.0.1:8000
@@ -175,7 +166,6 @@ GOSSIP_INTERVAL_SECS=5
 FANOUT=3
 MAX_PEERS=50
 RUST_LOG=info
-EOF
 
 # Start node (automatically reads .env)
 cargo run
