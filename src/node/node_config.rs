@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::message_codec::MAX_FRAME_SIZE;
 use crate::{AntiEntropyConfig, EpidemicConfig, Error, RateLimitConfig, Result, TransportConfig};
 
 /// Configuration for a Grapevine node.
@@ -61,7 +62,7 @@ impl Default for NodeConfig {
             bootstrap_peers: Vec::new(),
             gossip_interval: Duration::from_secs(5),
             fanout: 3,
-            max_message_size: 1024 * 1024, // 1 MB
+            max_message_size: MAX_FRAME_SIZE,
             peer_timeout: Duration::from_secs(30),
             max_peers: 50,
             connection_timeout: Duration::from_secs(10),
@@ -237,7 +238,7 @@ mod tests {
         let config = NodeConfig::default();
         assert_eq!(config.fanout, 3);
         assert_eq!(config.max_peers, 50);
-        assert_eq!(config.max_message_size, 1024 * 1024);
+        assert_eq!(config.max_message_size, MAX_FRAME_SIZE);
         assert_eq!(config.gossip_interval, Duration::from_secs(5));
         assert_eq!(config.peer_timeout, Duration::from_secs(30));
         assert_eq!(config.connection_timeout, Duration::from_secs(10));

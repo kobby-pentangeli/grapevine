@@ -5,7 +5,15 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use crate::{Error, Message, Result};
 
-const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024; // 10 MB
+/// Maximum message size (10 MB).
+///
+/// This constant is used as the default for:
+/// - `NodeConfig::max_message_size`
+/// - `Tcp::new()` (via `with_max_message_size`)
+///
+/// Users can configure a smaller limit via `NodeConfigBuilder::max_message_size()`,
+/// but this represents the absolute maximum enforced by the codec.
+pub const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024; // 10 MB
 
 /// Codec for gossip messages.
 ///

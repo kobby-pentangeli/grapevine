@@ -67,7 +67,7 @@ impl Gossip {
     pub fn new(config: NodeConfig) -> Self {
         let (shutdown_tx, _) = broadcast::channel(SHUTDOWN_CHANNEL_CAPACITY);
 
-        let mut transport = Tcp::new();
+        let mut transport = Tcp::with_max_message_size(config.max_message_size);
         if config.rate_limit.enabled {
             transport =
                 transport.set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate);
@@ -185,11 +185,12 @@ impl Gossip {
     /// The `peer` parameter should be the peer's canonical listening address.
     /// This method will automatically resolve it to the actual connection address.
     pub async fn send_to_peer(&self, peer: SocketAddr, data: Bytes) -> Result<()> {
-        let transport = self.transport.read().await;
-
-        let local_addr = transport
-            .local_addr()
-            .ok_or_else(|| Error::internal("No local address"))?;
+        let local_addr = {
+            let transport = self.transport.read().await;
+            transport
+                .local_addr()
+                .ok_or_else(|| Error::internal("No local address"))?
+        };
 
         // Resolve canonical address to connection address.
         // If the peer is us (we're listening on `peer`), use peer directly.
@@ -201,9 +202,12 @@ impl Gossip {
             .unwrap_or(peer);
 
         // Check if peer is connected using the transport's peer list
-        let connected_peers = transport.peers();
-        if !connected_peers.contains(&connection_addr) {
-            return Err(Error::PeerNotFound(peer));
+        {
+            let transport = self.transport.read().await;
+            let connected_peers = transport.peers();
+            if !connected_peers.contains(&connection_addr) {
+                return Err(Error::PeerNotFound(peer));
+            }
         }
 
         let message = Message::new(
@@ -225,6 +229,7 @@ impl Gossip {
         );
 
         // Send to the connection address, not the canonical address
+        let transport = self.transport.read().await;
         transport.send(connection_addr, message).await
     }
 
@@ -413,15 +418,9 @@ impl Gossip {
                             }
                             debug!("Received direct message from {}", message.id.origin);
                         } else {
-                            // Not for us, but mark as seen to avoid loops if it comes back
-                            seen_messages.insert(
-                                message.id,
-                                MessageEntry {
-                                    message: message.clone(),
-                                    first_seen: Instant::now(),
-                                    forward_count: 0,
-                                },
-                            );
+                            // Not for us, drop immediately without storing to prevent DOS attacks.
+                            // Direct messages are point-to-point and should not be relayed,
+                            // so there's no need to track them if they're misdirected.
                             trace!(
                                 "Direct message {} not for us (intended for {}), dropping",
                                 message.id, recipient

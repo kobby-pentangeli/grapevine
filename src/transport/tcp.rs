@@ -12,6 +12,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::{debug, error, warn};
 
+use crate::core::message_codec::MAX_FRAME_SIZE;
 use crate::{Error, Message, MessageCodec, Peer, PeerId, RateLimiter, Result};
 
 /// Maximum attempts to wait for peer registration after connection.
@@ -36,11 +37,19 @@ pub struct Tcp {
 
     /// Rate limiting configuration
     rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
+
+    /// Maximum message size in bytes
+    max_message_size: usize,
 }
 
 impl Tcp {
-    /// Create a new TCP transport.
+    /// Create a new TCP transport with default settings.
     pub fn new() -> Self {
+        Self::with_max_message_size(MAX_FRAME_SIZE) // 10 MB default
+    }
+
+    /// Create a new TCP transport with specified max message size.
+    pub fn with_max_message_size(max_message_size: usize) -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
 
         Self {
@@ -49,6 +58,7 @@ impl Tcp {
             message_rx: Arc::new(Mutex::new(message_rx)),
             message_tx,
             rate_limiter: None,
+            max_message_size,
         }
     }
 
@@ -75,6 +85,7 @@ impl Tcp {
         let peers = Arc::clone(&self.peers);
         let message_tx = self.message_tx.clone();
         let rate_limiter = self.rate_limiter.clone();
+        let max_message_size = self.max_message_size;
 
         tokio::spawn(async move {
             loop {
@@ -87,6 +98,7 @@ impl Tcp {
                             Arc::clone(&peers),
                             message_tx.clone(),
                             rate_limiter.clone(),
+                            max_message_size,
                         );
                     }
                     Err(e) => {
@@ -118,6 +130,7 @@ impl Tcp {
             Arc::clone(&self.peers),
             self.message_tx.clone(),
             self.rate_limiter.clone(),
+            self.max_message_size,
         );
 
         for _ in 0..PEER_REGISTRATION_MAX_ATTEMPTS {
@@ -175,6 +188,7 @@ impl Tcp {
         peers: Arc<DashMap<SocketAddr, Peer>>,
         message_tx: UnboundedSender<(SocketAddr, Message)>,
         rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
+        max_message_size: usize,
     ) {
         tokio::spawn(async move {
             let (reader, writer) = stream.into_split();
@@ -184,9 +198,11 @@ impl Tcp {
             let peer = Peer::new(PeerId(peer_addr), tx);
             peers.insert(peer_addr, peer);
 
+            let codec = MessageCodec::with_max_frame_size(max_message_size);
+
             // Spawn writer task
             let write_task = {
-                let mut sink = FramedWrite::new(writer, MessageCodec::new());
+                let mut sink = FramedWrite::new(writer, codec.clone());
                 tokio::spawn(async move {
                     while let Some(data) = rx.recv().await {
                         match bincode::serde::decode_from_slice::<Message, _>(
@@ -209,7 +225,7 @@ impl Tcp {
 
             // Spawn reader task
             let read_task = {
-                let mut stream = FramedRead::new(reader, MessageCodec::new());
+                let mut stream = FramedRead::new(reader, codec);
                 tokio::spawn(async move {
                     while let Some(result) = stream.next().await {
                         match result {
