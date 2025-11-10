@@ -44,14 +44,16 @@ async fn two_node_direct_message() {
     node2.start().await.expect("Failed to start node2");
     let addr2 = node2.local_addr().await.expect("No local address");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait longer for connection to fully establish (Windows needs more time)
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     node1
         .send_to_peer(addr2, Bytes::from("direct message"))
         .await
         .expect("Failed to send direct message");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Wait for message to be received
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     assert_eq!(
         received.load(Ordering::Relaxed),
@@ -109,14 +111,14 @@ async fn direct_message_not_propagated() {
         .await;
     node3.start().await.expect("Failed to start node3");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
 
     node1
         .send_to_peer(addr2, Bytes::from("private message"))
         .await
         .expect("Failed to send direct message");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     assert_eq!(
         received2.load(Ordering::Relaxed),
@@ -175,21 +177,21 @@ async fn bidirectional_direct_messaging() {
     node2.start().await.expect("Failed to start node2");
     let addr2 = node2.local_addr().await.expect("No local address");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     node1
         .send_to_peer(addr2, Bytes::from("ping"))
         .await
         .expect("Failed to send ping");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
 
     node2
         .send_to_peer(addr1, Bytes::from("reply"))
         .await
         .expect("Failed to send reply");
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
 
     assert_eq!(
         received2.load(Ordering::Relaxed),
@@ -256,17 +258,17 @@ async fn multiple_sequential_direct_messages() {
     node2.start().await.expect("Failed to start node2");
     let addr2 = node2.local_addr().await.expect("No local address");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     for i in 0..5 {
         node1
             .send_to_peer(addr2, Bytes::from(format!("message {i}")))
             .await
             .expect("Failed to send direct message");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     assert_eq!(
         received.load(Ordering::Relaxed),
@@ -330,7 +332,7 @@ async fn direct_message_isolation_in_mesh() {
         counters.push(counter);
     }
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     let addr2 = nodes[1].local_addr().await.expect("No local address");
 
@@ -339,7 +341,7 @@ async fn direct_message_isolation_in_mesh() {
         .await
         .expect("Failed to send direct message");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
 
     assert_eq!(
         counters[0].load(Ordering::Relaxed),

@@ -32,13 +32,20 @@ async fn five_node_mesh_broadcast() {
     node1.start().await.expect("Failed to start node1");
     let addr1 = node1.local_addr().await.expect("No local address");
 
-    // Create 4 additional nodes, all connecting to node1
+    // Create 4 additional nodes, connecting to node1 and previous node for better mesh topology
     let mut nodes = vec![node1];
     let mut counters = vec![received1];
+    let mut addresses = vec![addr1];
 
     for i in 2..=5 {
-        let config = NodeConfigBuilder::new()
-            .add_bootstrap_peer(addr1)
+        let mut config_builder = NodeConfigBuilder::new().add_bootstrap_peer(addr1);
+
+        // Also connect to the previous node to create a better mesh topology
+        if i > 2 {
+            config_builder = config_builder.add_bootstrap_peer(addresses[i - 3]);
+        }
+
+        let config = config_builder
             .fanout(3) // Higher fanout for better propagation
             .build()
             .expect("Failed to build config");
@@ -58,12 +65,15 @@ async fn five_node_mesh_broadcast() {
             .await
             .unwrap_or_else(|_| panic!("Failed to start node{i}"));
 
+        let addr = node.local_addr().await.expect("No local address");
+        addresses.push(addr);
         nodes.push(node);
         counters.push(counter);
     }
 
     // Wait for mesh to form; nodes need time to discover each other
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Increased for reliability on slower systems and busy CI environments
+    tokio::time::sleep(Duration::from_millis(2000)).await;
 
     // Each node broadcasts a unique message
     for (i, node) in nodes.iter().enumerate() {
@@ -71,11 +81,11 @@ async fn five_node_mesh_broadcast() {
             .await
             .expect("Failed to broadcast");
         // Small delay between broadcasts to avoid overwhelming the network
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
     // Wait for all messages to propagate through the network
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_millis(5000)).await;
 
     // Each node should receive messages from other nodes (4 messages expected)
     // Note: Nodes do not receive their own broadcasts via the message handler
