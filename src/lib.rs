@@ -1,46 +1,80 @@
-//! Grapevine - A simple peer-to-peer gossip protocol handler.
+//! Grapevine - A modern, asynchronous peer-to-peer gossip protocol library.
+//!
+//! This library provides an implementation of gossip protocols for
+//! distributed systems, supporting epidemic broadcast, anti-entropy, and
+//! configurable transport layers.
+//!
+//! # Features
+//!
+//! - **Async/await**: Built on Tokio for efficient asynchronous I/O
+//! - **Flexible transport**: TCP by default, QUIC [scheduled for v1.1+]
+//! - **Configurable**: Extensive configuration options
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use grapevine::{NodeConfig, Node};
+//! use bytes::Bytes;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let config = NodeConfig::default();
+//!     let node = Node::new(config).await?;
+//!
+//!     node.on_message(|origin, data| {
+//!         println!("Received from {origin}: {data:?}");
+//!     }).await;
+//!
+//!     node.start().await?;
+//!     node.broadcast(Bytes::from("Hello, gossip!")).await?;
+//!     node.shutdown().await?;
+//!
+//!     Ok(())
+//! }
+//! ```
 
-#![forbid(
-    arithmetic_overflow,
-    mutable_transmutes,
-    no_mangle_const_items,
-    unknown_crate_types
-)]
-#![warn(
-    bad_style,
-    deprecated,
-    improper_ctypes,
-    missing_docs,
-    non_shorthand_field_patterns,
-    overflowing_literals,
-    stable_features,
-    unconditional_recursion,
-    unknown_lints,
-    unsafe_code,
-    unused,
-    unused_allocation,
-    unused_attributes,
-    unused_comparisons,
-    unused_features,
-    unused_parens,
-    while_true,
-    clippy::unicode_not_nfc,
-    clippy::unwrap_used,
-    trivial_casts,
-    trivial_numeric_casts,
-    unused_extern_crates,
-    unused_import_braces,
-    unused_qualifications
-)]
+#![forbid(unsafe_code)]
+#![warn(missing_docs, clippy::all)]
 
-/// Connection information about peers
-pub mod connection;
-/// Error types
+pub mod core;
 pub mod error;
-/// Utility for testing
-pub mod logger;
-/// Functionality of a peer-to-peer node in the network
 pub mod node;
+pub mod protocol;
+pub mod transport;
 
-/// Result wrapper
-pub type Result<T> = std::result::Result<T, error::Error>;
+pub use core::{
+    Message, MessageCodec, MessageId, Payload, Peer, PeerId, PeerInfo, PeerState, RateLimitConfig,
+    RateLimiter,
+};
+
+pub use error::Error;
+pub use node::{Node, NodeConfig, NodeConfigBuilder};
+pub use protocol::{AntiEntropy, AntiEntropyConfig, EpidemicConfig, Gossip, MessageEntry};
+pub use transport::{Tcp, Transport, TransportConfig};
+
+/// Result type alias for all operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Serde helper for Duration (de)serialization.
+pub mod serde_duration {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Serialize a Duration as u64 seconds.
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(duration.as_secs())
+    }
+
+    /// Deserialize a Duration from u64 seconds.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secs = u64::deserialize(deserializer)?;
+        Ok(Duration::from_secs(secs))
+    }
+}

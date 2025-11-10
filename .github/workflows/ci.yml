@@ -1,0 +1,82 @@
+name: CI
+
+on:
+    push:
+        branches: [master, main]
+    pull_request:
+        branches: [master, main]
+
+env:
+    RUST_BACKTRACE: 1
+    CARGO_TERM_COLOR: always
+    CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+    build:
+        name: Build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - run: cargo build --release --all-features
+
+    test:
+        name: Test Suite
+        runs-on: ${{ matrix.os }}
+        strategy:
+            matrix:
+                # Windows excluded from test matrix due to timing sensitivity in network tests.
+                # Windows builds are verified separately below.
+                os: [ubuntu-latest, macos-latest]
+                rust: [stable, nightly]
+            fail-fast: false
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: ${{ matrix.rust }}
+            - uses: Swatinem/rust-cache@v2
+            - run: cargo test --all-features
+
+    windows-build:
+        name: Windows Build
+        runs-on: windows-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - run: cargo build --release --all-features
+            - run: cargo build --all-features
+
+    fmt:
+        name: Rustfmt
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@nightly
+              with:
+                  components: rustfmt
+            - run: cargo +nightly fmt --all -- --check
+
+    clippy:
+        name: Clippy
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: clippy
+            - uses: Swatinem/rust-cache@v2
+            - run: cargo clippy --all-features --all-targets -- -D warnings
+
+    doc:
+        name: Documentation
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+            - run: cargo doc --all-features --no-deps --document-private-items
+              env:
+                  RUSTDOCFLAGS: -D warnings
