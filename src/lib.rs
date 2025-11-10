@@ -27,6 +27,7 @@
 //!
 //!     node.start().await?;
 //!     node.broadcast(Bytes::from("Hello, gossip!")).await?;
+//!     node.shutdown().await?;
 //!
 //!     Ok(())
 //! }
@@ -35,18 +36,45 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::all)]
 
-pub mod codec;
-pub mod config;
 pub mod core;
 pub mod error;
+pub mod node;
 pub mod protocol;
 pub mod transport;
 
-pub use core::{Message, MessageId, Node, Payload, Peer, PeerId, PeerInfo, PeerState};
+pub use core::{
+    Message, MessageCodec, MessageId, Payload, Peer, PeerId, PeerInfo, PeerState, RateLimitConfig,
+    RateLimiter,
+};
 
-pub use codec::MessageCodec;
-pub use config::{NodeConfig, NodeConfigBuilder, RateLimitConfig, RateLimiter, TransportConfig};
-pub use error::{Error, Result};
-pub use protocol::{AntiEntropy, AntiEntropyConfig, EpidemicConfig, Gossip};
-pub use transport::Transport;
-pub use transport::tcp::TcpTransport;
+pub use error::Error;
+pub use node::{Node, NodeConfig, NodeConfigBuilder};
+pub use protocol::{AntiEntropy, AntiEntropyConfig, EpidemicConfig, Gossip, MessageEntry};
+pub use transport::{Tcp, Transport, TransportConfig};
+
+/// Result type alias for all operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Serde helper for Duration (de)serialization.
+pub mod serde_duration {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Serialize a Duration as u64 seconds.
+    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u64(duration.as_secs())
+    }
+
+    /// Deserialize a Duration from u64 seconds.
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secs = u64::deserialize(deserializer)?;
+        Ok(Duration::from_secs(secs))
+    }
+}

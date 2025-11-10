@@ -14,8 +14,14 @@ use tracing::{debug, error, warn};
 
 use crate::{Error, Message, MessageCodec, Peer, PeerId, RateLimiter, Result};
 
+/// Maximum attempts to wait for peer registration after connection.
+const PEER_REGISTRATION_MAX_ATTEMPTS: u32 = 50;
+
+/// Delay between peer registration checks (milliseconds).
+const PEER_REGISTRATION_CHECK_DELAY_MS: u64 = 10;
+
 /// TCP transport for gossip messages.
-pub struct TcpTransport {
+pub struct Tcp {
     /// Local listening address
     local_addr: Option<SocketAddr>,
 
@@ -32,7 +38,7 @@ pub struct TcpTransport {
     rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
 }
 
-impl TcpTransport {
+impl Tcp {
     /// Create a new TCP transport.
     pub fn new() -> Self {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
@@ -48,7 +54,7 @@ impl TcpTransport {
 
     /// Enable rate limiting with the given configuration.
     pub fn set_rate_limit(mut self, capacity: u32, refill_rate: u32) -> Self {
-        self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::new(
+        self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::with_params(
             capacity,
             refill_rate,
         ))));
@@ -114,12 +120,14 @@ impl TcpTransport {
             self.rate_limiter.clone(),
         );
 
-        let max_wait = 50;
-        for _ in 0..max_wait {
+        for _ in 0..PEER_REGISTRATION_MAX_ATTEMPTS {
             if self.peers.contains_key(&addr) {
                 return Ok(());
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                PEER_REGISTRATION_CHECK_DELAY_MS,
+            ))
+            .await;
         }
 
         Err(Error::Connection {
@@ -207,7 +215,7 @@ impl TcpTransport {
                         match result {
                             Ok(message) => {
                                 if let Some(ref limiter) = rate_limiter {
-                                    let allowed = limiter.lock().await.check_rate_limit(peer_addr);
+                                    let allowed = limiter.lock().await.allow_request(peer_addr);
                                     if !allowed {
                                         warn!(
                                             "Rate limit exceeded for peer {peer_addr}, dropping message"
@@ -243,7 +251,7 @@ impl TcpTransport {
     }
 }
 
-impl Default for TcpTransport {
+impl Default for Tcp {
     fn default() -> Self {
         Self::new()
     }

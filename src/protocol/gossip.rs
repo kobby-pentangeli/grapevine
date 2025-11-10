@@ -12,10 +12,22 @@ use tokio::sync::{RwLock, broadcast};
 use tokio::time::{self, sleep};
 use tracing::{debug, info, trace, warn};
 
-use crate::protocol::anti_entropy::{AntiEntropy, MessageEntry};
-use crate::protocol::epidemic::EpidemicConfig;
-use crate::transport::tcp::TcpTransport;
-use crate::{Error, Message, MessageId, NodeConfig, Payload, Peer, PeerId, PeerState, Result};
+use crate::{
+    AntiEntropy, EpidemicConfig, Error, Message, MessageEntry, MessageId, NodeConfig, Payload,
+    Peer, PeerId, PeerState, Result, Tcp,
+};
+
+/// Shutdown broadcast channel capacity.
+const SHUTDOWN_CHANNEL_CAPACITY: usize = 16;
+
+/// Grace period for in-flight messages during shutdown (milliseconds).
+const SHUTDOWN_GRACE_PERIOD_MS: u64 = 500;
+
+/// Peer maintenance check interval (seconds).
+const PEER_MAINTENANCE_INTERVAL_SECS: u64 = 10;
+
+/// Message deduplication cleanup interval (seconds).
+const MESSAGE_CLEANUP_INTERVAL_SECS: u64 = 30;
 
 /// Main gossip protocol engine.
 pub struct Gossip {
@@ -23,7 +35,7 @@ pub struct Gossip {
     config: NodeConfig,
 
     /// TCP transport
-    transport: Arc<RwLock<TcpTransport>>,
+    transport: Arc<RwLock<Tcp>>,
 
     /// Connected peers
     peers: Arc<DashMap<PeerId, Peer>>,
@@ -53,9 +65,9 @@ pub struct Gossip {
 impl Gossip {
     /// Create a new gossip protocol instance.
     pub fn new(config: NodeConfig) -> Self {
-        let (shutdown_tx, _) = broadcast::channel(16);
+        let (shutdown_tx, _) = broadcast::channel(SHUTDOWN_CHANNEL_CAPACITY);
 
-        let mut transport = TcpTransport::new();
+        let mut transport = Tcp::new();
         if config.rate_limit.enabled {
             transport =
                 transport.set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate);
@@ -270,7 +282,7 @@ impl Gossip {
         debug!("Broadcasting shutdown signal");
         let _ = self.shutdown_tx.send(());
 
-        sleep(Duration::from_millis(500)).await;
+        sleep(Duration::from_millis(SHUTDOWN_GRACE_PERIOD_MS)).await;
 
         debug!("Clearing peer list");
         self.peers.clear();
@@ -323,9 +335,9 @@ impl Gossip {
                 let canonical_addr = message.id.origin;
                 canonical_addrs.insert(canonical_addr, peer_addr);
                 if canonical_addr != peer_addr {
-                    debug!("Mapped canonical {canonical_addr} → connection {peer_addr}");
+                    debug!("Mapped canonical {canonical_addr} -> connection {peer_addr}");
                 } else {
-                    debug!("Mapped canonical {canonical_addr} → self (outbound connection)");
+                    debug!("Mapped canonical {canonical_addr} -> self (outbound connection)");
                 }
 
                 trace!("Received message from {peer_addr}: {:?}", message.id);
@@ -454,7 +466,7 @@ impl Gossip {
 
                             let mut new_message = message.clone();
                             new_message.decrement_ttl();
-                            let _ = Self::gossip_to_random_peers(
+                            let _ = Self::gossip_to_fanout(
                                 &transport,
                                 &peers,
                                 new_message,
@@ -509,7 +521,7 @@ impl Gossip {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            let mut ticker = time::interval(Duration::from_secs(10));
+            let mut ticker = time::interval(Duration::from_secs(PEER_MAINTENANCE_INTERVAL_SECS));
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
@@ -553,7 +565,7 @@ impl Gossip {
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            let mut ticker = time::interval(Duration::from_secs(30));
+            let mut ticker = time::interval(Duration::from_secs(MESSAGE_CLEANUP_INTERVAL_SECS));
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
@@ -583,12 +595,11 @@ impl Gossip {
     }
 
     async fn gossip_message(&self, message: Message) -> Result<()> {
-        Self::gossip_to_random_peers(&self.transport, &self.peers, message, self.config.fanout)
-            .await
+        Self::gossip_to_fanout(&self.transport, &self.peers, message, self.config.fanout).await
     }
 
-    async fn gossip_to_random_peers(
-        transport: &Arc<RwLock<TcpTransport>>,
+    async fn gossip_to_fanout(
+        transport: &Arc<RwLock<Tcp>>,
         _peers: &Arc<DashMap<PeerId, Peer>>,
         message: Message,
         fanout: usize,
@@ -615,7 +626,7 @@ impl Gossip {
         Ok(())
     }
 
-    async fn handle_peer_list_request(transport: &Arc<RwLock<TcpTransport>>, sender: SocketAddr) {
+    async fn handle_peer_list_request(transport: &Arc<RwLock<Tcp>>, sender: SocketAddr) {
         let transport_guard = transport.read().await;
         let peer_list = transport_guard.peers();
 
@@ -630,10 +641,7 @@ impl Gossip {
         }
     }
 
-    async fn handle_peer_list_response(
-        transport: &Arc<RwLock<TcpTransport>>,
-        peer_list: &[SocketAddr],
-    ) {
+    async fn handle_peer_list_response(transport: &Arc<RwLock<Tcp>>, peer_list: &[SocketAddr]) {
         for &peer_addr in peer_list {
             if let Err(e) = transport.read().await.connect(peer_addr).await {
                 debug!("Failed to connect to peer {peer_addr}: {e}");

@@ -1,13 +1,16 @@
 //! High-level node API.
 
+pub mod node_config;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
+pub use node_config::{NodeConfig, NodeConfigBuilder};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::trace;
 
-use crate::{Gossip, NodeConfig, Result};
+use crate::{Gossip, Result};
 
 /// A Grapevine gossip node.
 ///
@@ -29,11 +32,12 @@ use crate::{Gossip, NodeConfig, Result};
 ///     let node = Node::new(config).await?;
 ///
 ///     node.on_message(|origin, data| {
-///         println!("Got message from {}: {:?}", origin, data);
+///         println!("Got message from {origin}: {data:?}");
 ///     }).await;
 ///
 ///     node.start().await?;
 ///     node.broadcast(Bytes::from("Hello!")).await?;
+///     node.shutdown().await?;
 ///
 ///     Ok(())
 /// }
@@ -81,7 +85,7 @@ impl Node {
     pub async fn start(&self) -> Result<()> {
         let mut protocol = self.protocol.write().await;
         protocol.start().await?;
-        info!("Node started successfully");
+        trace!("Node started");
         Ok(())
     }
 
@@ -144,7 +148,7 @@ impl Node {
     pub async fn shutdown(&self) -> Result<()> {
         let protocol = self.protocol.read().await;
         protocol.shutdown().await?;
-        info!("Node shut down");
+        trace!("Node shut down");
         Ok(())
     }
 }

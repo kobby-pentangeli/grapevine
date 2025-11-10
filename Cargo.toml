@@ -53,7 +53,7 @@ crypto = ["dep:blake3", "dep:ed25519-dalek"]
 
 [[bin]]
 name = "grapevine"
-path = "src/bin/main.rs"
+path = "src/main.rs"
 required-features = []
 
 [[bench]]

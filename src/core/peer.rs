@@ -10,7 +10,22 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{Error, Result};
 
-/// Unique identifier for a peer (currently just their socket address).
+/// Age bonus divisor for health score calculation (seconds).
+const AGE_BONUS_DIVISOR: f64 = 300.0;
+
+/// Maximum age bonus for health score.
+const MAX_AGE_BONUS: f64 = 0.2;
+
+/// Penalty per consecutive failure for health score.
+const CONSECUTIVE_FAILURE_PENALTY: f64 = 0.1;
+
+/// Maximum consecutive failure penalty for health score.
+const MAX_CONSECUTIVE_PENALTY: f64 = 0.5;
+
+/// Maximum consecutive failures before peer disconnection.
+const MAX_CONSECUTIVE_FAILURES: u64 = 5;
+
+/// Unique identifier for a peer (currently just its socket address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PeerId(pub SocketAddr);
 
@@ -61,7 +76,7 @@ pub struct PeerInfo {
     pub messages_sent: u64,
 
     /// Number of failed send attempts
-    pub failures: u64,
+    pub message_failures: u64,
 
     /// Consecutive failures (reset on success)
     pub consecutive_failures: u64,
@@ -78,7 +93,7 @@ impl PeerInfo {
             connected_at: now,
             messages_received: 0,
             messages_sent: 0,
-            failures: 0,
+            message_failures: 0,
             consecutive_failures: 0,
         }
     }
@@ -123,15 +138,15 @@ impl PeerInfo {
         self.consecutive_failures = 0;
     }
 
-    /// Record a failure.
+    /// Record a failure in sending a message.
     pub fn record_failure(&mut self) {
-        self.failures = self.failures.saturating_add(1);
+        self.message_failures = self.message_failures.saturating_add(1);
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
     }
 
     /// Calculate health score (0.0 = poor, 1.0 = excellent).
     pub fn health_score(&self) -> f64 {
-        let total_attempts = self.messages_sent + self.failures;
+        let total_attempts = self.messages_sent + self.message_failures;
         if total_attempts == 0 {
             return 1.0;
         }
@@ -139,16 +154,17 @@ impl PeerInfo {
         let success_rate = self.messages_sent as f64 / total_attempts as f64;
 
         let age_seconds = self.connected_at.elapsed().as_secs() as f64;
-        let age_bonus = (age_seconds / 300.0).min(0.2);
+        let age_bonus = (age_seconds / AGE_BONUS_DIVISOR).min(MAX_AGE_BONUS);
 
-        let consecutive_penalty = (self.consecutive_failures as f64 * 0.1).min(0.5);
+        let consecutive_penalty = (self.consecutive_failures as f64 * CONSECUTIVE_FAILURE_PENALTY)
+            .min(MAX_CONSECUTIVE_PENALTY);
 
         (success_rate + age_bonus - consecutive_penalty).clamp(0.0, 1.0)
     }
 
     /// Check if peer should be disconnected due to failures.
     pub fn should_disconnect(&self) -> bool {
-        self.consecutive_failures >= 5
+        self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES
     }
 }
 
@@ -202,7 +218,7 @@ mod tests {
 
     #[test]
     fn peer_info_saturating_counters() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let mut info = PeerInfo::new(PeerId(addr));
 
         info.messages_received = u64::MAX;
@@ -216,7 +232,7 @@ mod tests {
 
     #[test]
     fn peer_send_success() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -236,7 +252,7 @@ mod tests {
 
     #[test]
     fn peer_send_failure_channel_closed() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -253,25 +269,25 @@ mod tests {
 
     #[test]
     fn peer_multiple_sends() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut peer = Peer::new(peer_id, tx);
 
         for i in 0..5 {
-            let data = Bytes::from(format!("message {}", i));
+            let data = Bytes::from(format!("message {i}"));
             assert!(peer.send(data.clone()).is_ok());
             assert_eq!(peer.info.messages_sent, i + 1);
 
             let received = rx.try_recv().unwrap();
-            assert_eq!(received, Bytes::from(format!("message {}", i)));
+            assert_eq!(received, Bytes::from(format!("message {i}")));
         }
     }
 
     #[test]
     fn peer_id_serialization() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
 
         let serialized = serde_json::to_string(&peer_id).unwrap();

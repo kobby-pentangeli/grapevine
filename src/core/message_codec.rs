@@ -94,6 +94,7 @@ impl Encoder<Message> for MessageCodec {
 
 #[cfg(test)]
 mod tests {
+
     use bytes::Bytes;
 
     use super::*;

@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut nodes = Vec::new();
 
-    // Create first node
+    // Create first (seed) node
     let node1 = Node::new(NodeConfig::default()).await?;
     node1.start().await?;
     let addr1 = node1.local_addr().await.unwrap();

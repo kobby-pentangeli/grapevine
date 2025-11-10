@@ -13,7 +13,7 @@ use crossterm::{cursor, execute};
 use grapevine::{Node, NodeConfigBuilder};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
-use tracing::{Level, info};
+use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser, Debug)]
@@ -29,7 +29,7 @@ struct Args {
     #[arg(short, long, env = "BIND_PORT", default_value = "8000")]
     port: u16,
 
-    /// Bootstrap peer addresses (can specify multiple)
+    /// Bootstrap peer address (can specify multiple)
     #[arg(
         short = 'b',
         long = "peer",
@@ -117,7 +117,7 @@ fn print_colored(color: Color, text: &str) {
     stdout.flush().ok();
 }
 
-/// Print colored line
+/// Print colored message with a newline appended to the output
 fn println_colored(color: Color, text: &str) {
     print_colored(color, text);
     println!();
@@ -147,7 +147,7 @@ fn display_help() {
     println_colored(Color::Yellow, "Available Commands:");
     println!();
     println!("  /broadcast <message>  - Broadcast a message to all peers");
-    println!("  /send <peer> <msg>    - Send direct message to specific peer");
+    println!("  /send <peer> <msg>    - Send a direct message to a specific peer");
     println!("  /peers                - List connected peers");
     println!("  /status               - Show node status");
     println!("  /help                 - Show this help message");
@@ -202,13 +202,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(config).await?;
 
     // Set up message handler with thread-safe output
-    let output_lock = Arc::new(Mutex::new(()));
-    let output_lock_clone = Arc::clone(&output_lock);
-
+    let output = Arc::new(Mutex::new(()));
     node.on_message(move |origin, data| {
-        let output_lock = Arc::clone(&output_lock_clone);
+        let output = Arc::clone(&output);
         tokio::spawn(async move {
-            let _lock = output_lock.lock().await;
+            let _output_lock = output.lock().await;
 
             // Clear current line and move to beginning
             execute!(
@@ -233,10 +231,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     node.start().await?;
-
     let local_addr = node.local_addr().await.expect("No local address");
 
-    // Display banner
     display_banner();
 
     println_colored(Color::Green, &format!("Node started on {local_addr}"));
@@ -259,7 +255,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!();
 
-    // Set up stdin reader
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
@@ -281,24 +276,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let command = Command::parse(&line);
 
         match command {
-            Command::Broadcast(msg) => match node.broadcast(Bytes::from(msg.clone())).await {
+            Command::Broadcast(msg) => match node.broadcast(Bytes::from(msg)).await {
                 Ok(_) => {
-                    println_colored(Color::Green, "✓ Message broadcasted");
+                    println_colored(Color::Green, "Message broadcasted");
                 }
                 Err(e) => {
-                    println_colored(Color::Red, &format!("✗ Broadcast failed: {e}"));
+                    println_colored(Color::Red, &format!("Broadcast failed: {e}"));
                 }
             },
-            Command::Send(peer, msg) => {
-                match node.send_to_peer(peer, Bytes::from(msg.clone())).await {
-                    Ok(_) => {
-                        println_colored(Color::Green, &format!("✓ Message sent to {peer}"));
-                    }
-                    Err(e) => {
-                        println_colored(Color::Red, &format!("✗ Send failed: {e}"));
-                    }
+            Command::Send(peer, msg) => match node.send_to_peer(peer, Bytes::from(msg)).await {
+                Ok(_) => {
+                    println_colored(Color::Green, &format!("Message sent to {peer}"));
                 }
-            }
+                Err(e) => {
+                    println_colored(Color::Red, &format!("Send failed: {e}"));
+                }
+            },
             Command::Peers => {
                 let peers = node.peers().await;
                 if peers.is_empty() {
@@ -306,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println_colored(Color::Cyan, &format!("Connected peers ({}):", peers.len()));
                     for peer in peers {
-                        println_colored(Color::White, &format!("  • {peer}"));
+                        println_colored(Color::White, &format!("  -> {peer}"));
                     }
                 }
             }
@@ -336,15 +329,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Command::Quit => {
                 println!();
-                info!("Shutting down gracefully...");
                 node.shutdown().await?;
-                println_colored(Color::Green, "✓ Node shutdown complete. Goodbye!");
+                println_colored(Color::Green, "Node shutdown complete. Goodbye!");
                 println!();
                 break;
             }
             Command::Unknown(msg) => {
                 if !msg.is_empty() {
-                    println_colored(Color::Red, &format!("✗ {msg}"));
+                    println_colored(Color::Red, &msg);
                 }
             }
         }

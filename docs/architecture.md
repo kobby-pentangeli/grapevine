@@ -7,17 +7,17 @@ This document describes the internal architecture of Grapevine.
 Grapevine is structured in layers:
 
 ┌─────────────────────────────────┐
-│         Application             │
+│          Application            │
 ├─────────────────────────────────┤
-│      Node API (core::Node)      │
+│           Node API              │
 ├─────────────────────────────────┤
-│    Gossip Protocol Engine       │
-│  (epidemic + anti-entropy)      │
+│         Protocol Engine         │
+│(gossip, epidemic, anti-entropy) │
 ├─────────────────────────────────┤
-│      Transport Layer            │
-│          (TCP)                  │
+│        Transport Layer          │
+│       (TCP, QUIC, etc)          │
 ├─────────────────────────────────┤
-│      Message Codec              │
+│          Core Types             │
 └─────────────────────────────────┘
 
 ## Components
@@ -25,29 +25,22 @@ Grapevine is structured in layers:
 ### Core Types (`src/core/`)
 
 - **Message**: Gossip message structure with ID, TTL, and payload variants
+- **MessageCodec**: Length-prefixed framing and bincode serialization
+  - Message size limit: 1MB default (configurable)
 - **Peer**: Represents a connected peer with health tracking
 - **PeerInfo**: Peer metadata with health score, failure tracking, state machine
-- **Node**: High-level API for applications
-
-### Protocol (`src/protocol/`)
-
-- **Gossip**: Main protocol engine with background tasks
-- **Epidemic**: Probabilistic broadcast (70% forward probability, max 5 forwards)
-- **Anti-Entropy**: Periodic digest exchange and repair (every 30s)
-
-### Configuration (`src/config/`)
-
 - **RateLimiter**: Per-peer token bucket rate limiting (100 capacity, 50 tokens/sec)
 
-### Transport (`src/transport/`)
+### Transport Layer (`src/transport/`)
 
 - **TcpTransport**: TCP-based transport with connection pooling
 - Note: QUIC transport planned for `v1.1+`
 
-### Codec (`src/codec/`)
+### Protocol Engine (`src/protocol/`)
 
-- **MessageCodec**: Length-prefixed framing and bincode serialization
-- Message size limit: 1MB default (configurable)
+- **Gossip**: Main protocol engine with background tasks
+- **Epidemic**: Probabilistic broadcast (70% forward probability, max 5 forwards)
+- **Anti-Entropy**: Periodic digest exchange and repair (every 30s)
 
 ## Message Flow
 

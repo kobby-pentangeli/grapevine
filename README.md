@@ -1,9 +1,5 @@
 # Grapevine
 
-[![Crates.io](https://img.shields.io/crates/v/grapevine.svg)](https://crates.io/crates/grapevine)
-[![Documentation](https://docs.rs/grapevine/badge.svg)](https://docs.rs/grapevine)
-[![License](https://img.shields.io/crates/l/grapevine.svg)](https://github.com/kobby-pentangeli/grapevine#license)
-
 A modern, asynchronous peer-to-peer gossip protocol library and application.
 
 ## Features
@@ -40,7 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up message handler
     node.on_message(|origin, data| {
-        println!("Received from {}: {:?}", origin, data);
+        println!("Received from {origin}: {data:?}");
     }).await;
 
     // Start the node
@@ -49,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Broadcast a message
     node.broadcast(Bytes::from("Hello, gossip!")).await?;
 
-    // Keep running
+    // Keep running until explicit shutdown
     tokio::signal::ctrl_c().await?;
     node.shutdown().await?;
 

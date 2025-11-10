@@ -83,29 +83,38 @@ When a node shuts down gracefully:
 ## Message Types (Payload Variants)
 
 ```rust
-// User data to be disseminated across the network.
-Payload::Application(Bytes)
+   /// User-defined application data
+   Application(Bytes),
 
-// Request for a peer's known peers (used during bootstrap).
-Payload::PeerListRequest
+   /// Peer discovery request
+   PeerDiscovery,
 
-// Response containing known peer addresses.
-Payload::PeerListResponse { peers: Vec<SocketAddr> }
+   /// Peer list announcement
+   PeerAnnouncement { peers: Vec<SocketAddr> },
 
-// Keep-alive message sent periodically.
-Payload::Heartbeat { from: SocketAddr }
+   /// Heartbeat/keep-alive
+   Heartbeat { from: SocketAddr },
 
-// Digest of all known message IDs for synchronization.
-Payload::AntiEntropyDigest { message_ids: Vec<MessageId> }
+   /// Request for peer list
+   PeerListRequest,
 
-// Request for specific messages by ID.
-Payload::MessageRequest { ids: Vec<MessageId> }
+   /// Response with peer list
+   PeerListResponse { peers: Vec<SocketAddr> },
 
-// Response containing requested messages.
-Payload::MessageResponse { messages: Vec<Message> }
+   /// Anti-entropy digest (message IDs this node knows about)
+   AntiEntropyDigest { message_ids: Vec<MessageId> },
 
-// Graceful shutdown notification to peers.
-Payload::Goodbye { reason: String }
+   /// Request for specific messages by ID
+   MessageRequest { ids: Vec<MessageId> },
+
+   /// Response containing requested messages
+   MessageResponse { messages: Vec<Message> },
+
+   /// Graceful shutdown notification
+   Goodbye { reason: String },
+
+   /// Direct message to a specific peer (not gossiped)
+   DirectMessage { recipient: SocketAddr, data: Bytes },
 ```
 
 ## Wire Format

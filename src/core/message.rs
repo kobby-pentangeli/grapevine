@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn create_message_id() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let id1 = MessageId::new(addr);
         let id2 = MessageId::new(addr);
         assert_ne!(id1.sequence, id2.sequence);
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn decrement_ttl() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let mut msg = Message::with_ttl(addr, Payload::PeerDiscovery, 2);
         assert!(msg.decrement_ttl());
         assert_eq!(msg.ttl, 1);
@@ -222,7 +222,7 @@ mod tests {
         }
 
         // Payload::Heartbeat
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let addr = "127.0.0.1:8000".parse().unwrap();
         let payload = Payload::Heartbeat { from: addr };
         assert!(payload.is_protocol_message());
         match payload {
@@ -246,7 +246,7 @@ mod tests {
         }
 
         // Payload::DirectMessage
-        let recipient: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+        let recipient = "127.0.0.1:8001".parse().unwrap();
         let data = Bytes::from("private message");
         let payload = Payload::DirectMessage {
             recipient,
@@ -278,10 +278,10 @@ mod tests {
 
     #[test]
     fn multiple_messages_different_sequences() {
-        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
-        let messages: Vec<_> = (0..10)
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let messages = (0..10)
             .map(|_| Message::new(addr, Payload::PeerDiscovery))
-            .collect();
+            .collect::<Vec<_>>();
 
         for i in 0..messages.len() - 1 {
             for j in i + 1..messages.len() {
@@ -292,8 +292,8 @@ mod tests {
 
     #[test]
     fn direct_message_serialization() {
-        let sender: SocketAddr = "127.0.0.1:8000".parse().unwrap();
-        let recipient: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+        let sender = "127.0.0.1:8000".parse().unwrap();
+        let recipient = "127.0.0.1:8001".parse().unwrap();
         let data = Bytes::from("test direct message");
 
         let message = Message::new(

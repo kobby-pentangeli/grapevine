@@ -1,11 +1,12 @@
 //! Network transport implementations.
 
 pub mod tcp;
-
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+pub use tcp::Tcp;
 
 use crate::Result;
 
@@ -23,4 +24,11 @@ pub trait Transport: Send + Sync {
 
     /// Receive data from any peer.
     async fn recv(&mut self) -> Result<(SocketAddr, Bytes)>;
+}
+
+/// Transport protocol configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TransportConfig {
+    /// TCP transport
+    Tcp,
 }

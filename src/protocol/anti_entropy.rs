@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
@@ -15,14 +15,13 @@ use tokio::sync::RwLock;
 use tokio::time;
 use tracing::{debug, trace, warn};
 
-use crate::transport::tcp::TcpTransport;
-use crate::{Message, MessageId, Payload, Result};
+use crate::{Message, MessageId, Payload, Result, Tcp};
 
 /// Anti-entropy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntiEntropyConfig {
     /// Interval between anti-entropy rounds
-    #[serde(with = "crate::config::serde_duration")]
+    #[serde(with = "crate::serde_duration")]
     pub interval: Duration,
 
     /// Number of peers to sync with per round
@@ -62,7 +61,8 @@ impl MessageDigest {
         self.message_ids.insert(id);
     }
 
-    /// Compute the difference between this digest and another.
+    /// Compute the difference between this (`self`) digest and another (`other`),
+    /// returning the values that are in `self` but not `other`.
     pub fn diff(&self, other: &MessageDigest) -> Vec<MessageId> {
         other
             .message_ids
@@ -90,8 +90,6 @@ impl Default for MessageDigest {
     }
 }
 
-use std::time::Instant;
-
 /// Entry tracking a seen message.
 #[derive(Debug, Clone)]
 pub struct MessageEntry {
@@ -106,7 +104,7 @@ pub struct MessageEntry {
 /// Anti-entropy engine for message repair.
 pub struct AntiEntropy {
     config: AntiEntropyConfig,
-    transport: Arc<RwLock<TcpTransport>>,
+    transport: Arc<RwLock<Tcp>>,
     seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
 }
 
@@ -114,7 +112,7 @@ impl AntiEntropy {
     /// Create new anti-entropy engine.
     pub fn new(
         config: AntiEntropyConfig,
-        transport: Arc<RwLock<TcpTransport>>,
+        transport: Arc<RwLock<Tcp>>,
         seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
     ) -> Self {
         Self {
@@ -197,7 +195,7 @@ impl AntiEntropy {
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
         remote_message_ids: Vec<MessageId>,
-        transport: &Arc<RwLock<TcpTransport>>,
+        transport: &Arc<RwLock<Tcp>>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
         let remote_digest = MessageDigest::from_vec(remote_message_ids);
@@ -264,7 +262,7 @@ impl AntiEntropy {
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
         requested_ids: Vec<MessageId>,
-        transport: &Arc<RwLock<TcpTransport>>,
+        transport: &Arc<RwLock<Tcp>>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
         let mut messages_to_send = Vec::new();

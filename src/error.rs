@@ -3,9 +3,6 @@
 use std::io;
 use std::net::SocketAddr;
 
-/// Result type alias for all operations.
-pub type Result<T> = std::result::Result<T, Error>;
-
 /// Main error type for all operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -50,10 +47,6 @@ pub enum Error {
     #[error("Peer not found: {0}")]
     PeerNotFound(SocketAddr),
 
-    /// Node is shutting down.
-    #[error("Node is shutting down")]
-    Shutdown,
-
     /// Message too large.
     #[error("Message size {size} exceeds maximum {max}")]
     MessageTooLarge {
@@ -63,20 +56,9 @@ pub enum Error {
         max: usize,
     },
 
-    /// Invalid message format.
-    #[error("Invalid message format: {0}")]
-    InvalidMessage(String),
-
     /// Channel send/receive error.
     #[error("Channel send/receive error: {0}")]
     Channel(String),
-
-    /// Timeout occurred.
-    #[error("Operation timed out after {duration_ms}ms")]
-    Timeout {
-        /// Duration in milliseconds
-        duration_ms: u64,
-    },
 
     /// Cryptographic operation failed.
     #[cfg(feature = "crypto")]
@@ -130,6 +112,7 @@ macro_rules! internal_error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Result;
 
     #[test]
     fn error_from_bincode() {

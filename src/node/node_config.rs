@@ -1,12 +1,11 @@
-//! Node configuration structures.
+//! Implements `Node` configuration.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::RateLimitConfig;
-use crate::{AntiEntropyConfig, EpidemicConfig, Error, Result};
+use crate::{AntiEntropyConfig, EpidemicConfig, Error, RateLimitConfig, Result, TransportConfig};
 
 /// Configuration for a Grapevine node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,13 +52,6 @@ pub struct NodeConfig {
 
     /// Transport protocol
     pub transport: TransportConfig,
-}
-
-/// Transport protocol configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TransportConfig {
-    /// TCP transport
-    Tcp,
 }
 
 impl Default for NodeConfig {
