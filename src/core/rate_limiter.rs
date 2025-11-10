@@ -144,9 +144,10 @@ impl RateLimiter {
     /// This prevents unbounded memory growth for peers that disconnect.
     fn maybe_cleanup(&mut self) {
         if self.last_cleanup.elapsed() > CLEANUP_INTERVAL {
-            let cutoff = Instant::now() - BUCKET_MAX_AGE;
-            self.buckets.retain(|_, bucket| bucket.last_refill > cutoff);
-            self.last_cleanup = Instant::now();
+            let now = Instant::now();
+            self.buckets
+                .retain(|_, bucket| bucket.last_refill.elapsed() < BUCKET_MAX_AGE);
+            self.last_cleanup = now;
         }
     }
 
@@ -285,10 +286,13 @@ mod tests {
 
         assert_eq!(limiter.bucket_count(), 2);
 
-        limiter.last_cleanup = Instant::now() - CLEANUP_INTERVAL - Duration::from_secs(1);
+        limiter.last_cleanup = Instant::now()
+            .checked_sub(CLEANUP_INTERVAL + Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
 
-        limiter.buckets.get_mut(&peer1).unwrap().last_refill =
-            Instant::now() - BUCKET_MAX_AGE - Duration::from_secs(1);
+        limiter.buckets.get_mut(&peer1).unwrap().last_refill = Instant::now()
+            .checked_sub(BUCKET_MAX_AGE + Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
 
         limiter.allow_request(peer2);
 
