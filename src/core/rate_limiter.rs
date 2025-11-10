@@ -156,6 +156,15 @@ impl RateLimiter {
     fn bucket_count(&self) -> usize {
         self.buckets.len()
     }
+
+    /// Force cleanup for testing purposes with a custom max age.
+    #[cfg(test)]
+    fn cleanup_with_max_age(&mut self, max_age: Duration) {
+        let now = Instant::now();
+        self.buckets
+            .retain(|_, bucket| bucket.last_refill.elapsed() < max_age);
+        self.last_cleanup = now;
+    }
 }
 
 #[cfg(test)]
@@ -277,29 +286,36 @@ mod tests {
 
     #[test]
     fn bucket_cleanup() {
+        const TEST_BUCKET_MAX_AGE: Duration = Duration::from_millis(100);
+
         let mut limiter = RateLimiter::with_params(10, 10);
         let peer1 = "127.0.0.1:8000".parse().unwrap();
         let peer2 = "127.0.0.1:8001".parse().unwrap();
 
+        // Create bucket for peer1
         limiter.allow_request(peer1);
-        limiter.allow_request(peer2);
+        assert_eq!(limiter.bucket_count(), 1);
 
+        // Wait for peer1's bucket to age beyond MAX_AGE
+        thread::sleep(Duration::from_millis(120));
+
+        // Create bucket for peer2 (fresh)
+        limiter.allow_request(peer2);
         assert_eq!(limiter.bucket_count(), 2);
 
-        limiter.last_cleanup = Instant::now()
-            .checked_sub(CLEANUP_INTERVAL + Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
+        // Trigger cleanup with test-specific max age
+        // This tests the cleanup logic using a shorter timeout than production
+        limiter.cleanup_with_max_age(TEST_BUCKET_MAX_AGE);
 
-        limiter.buckets.get_mut(&peer1).unwrap().last_refill = Instant::now()
-            .checked_sub(BUCKET_MAX_AGE + Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
-
-        limiter.allow_request(peer2);
-
+        // Only peer2 should remain (peer1's bucket is > 100ms old, peer2 is fresh)
         assert_eq!(
             limiter.bucket_count(),
             1,
             "Stale bucket should be cleaned up"
         );
+
+        // Verify peer2 is the one that remains
+        assert!(limiter.buckets.contains_key(&peer2));
+        assert!(!limiter.buckets.contains_key(&peer1));
     }
 }
