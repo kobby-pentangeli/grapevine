@@ -1,5 +1,10 @@
 # Grapevine
 
+[![Crates.io](https://img.shields.io/crates/v/grapevine.svg)](https://crates.io/crates/grapevine)
+[![Documentation](https://docs.rs/grapevine/badge.svg)](https://docs.rs/grapevine)
+[![CI](https://github.com/kobby-pentangeli/grapevine/workflows/CI/badge.svg)](https://github.com/kobby-pentangeli/grapevine/actions)
+[![License](https://img.shields.io/crates/l/grapevine.svg)](https://github.com/kobby-pentangeli/grapevine#license)
+
 A modern, asynchronous peer-to-peer gossip protocol library and application.
 
 ## Features
@@ -11,9 +16,17 @@ A modern, asynchronous peer-to-peer gossip protocol library and application.
 - **Highly configurable** - Fine-tune gossip parameters for your use case
 - **Zero unsafe code** - Memory safe and thread safe
 
-## Quick Start
+## Installation
 
-Add this to your `Cargo.toml`:
+### As a Library
+
+To use Grapevine in your Rust project:
+
+```bash
+cargo add grapevine
+```
+
+Or add manually to your `Cargo.toml`:
 
 ```toml
 [dependencies]
@@ -21,6 +34,22 @@ grapevine = "1.0"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 ```
+
+### As a CLI Application
+
+To install the standalone gossip client binary:
+
+```bash
+cargo install grapevine
+```
+
+Then run:
+
+```bash
+grapevine --help
+```
+
+## Quick Start
 
 ### Basic Example
 

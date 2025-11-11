@@ -5,11 +5,13 @@ description = "A modern, asynchronous peer-to-peer gossip protocol library and a
 authors = ["Kobby Pentangeli <kobbypentangeli@gmail.com>"]
 repository = "https://github.com/kobby-pentangeli/grapevine"
 documentation = "https://docs.rs/grapevine"
-license = "MIT or APACHE-2.0"
+homepage = "https://github.com/kobby-pentangeli/grapevine"
+license = "MIT OR Apache-2.0"
 readme = "README.md"
-keywords = ["p2p", "peer-to-peer", "gossip"]
+keywords = ["peer-to-peer", "gossip", "async"]
 categories = ["network-programming"]
 edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
 # Async

@@ -4,12 +4,32 @@ This guide provides comprehensive instructions for using the Grapevine interacti
 
 ## Installation
 
-Build the Grapevine CLI from source:
+### Option 1: Install from crates.io (Recommended)
+
+Install the Grapevine CLI binary globally:
+
+```bash
+cargo install grapevine
+```
+
+Then run it directly:
+
+```bash
+grapevine --help
+```
+
+### Option 2: Build from Source
+
+Clone and build the repository:
 
 ```bash
 # Clone the repository
 git clone https://github.com/kobby-pentangeli/grapevine
 cd grapevine
+
+# Build and run
+cargo build --release
+./target/release/grapevine --help
 ```
 
 ## Quick Start
@@ -18,6 +38,10 @@ Start your first node and begin sending messages immediately:
 
 ```bash
 # Terminal 1: Start seed node
+# If installed via 'cargo install grapevine':
+grapevine
+
+# Or if running from source:
 cargo run
 ```
 
@@ -42,6 +66,10 @@ In another terminal, join the network:
 
 ```bash
 # Terminal 2: Join the network
+# If installed:
+grapevine --port 8001 --peer 127.0.0.1:8000
+
+# Or from source:
 cargo run -- --port 8001 --peer 127.0.0.1:8000
 ```
 
@@ -152,10 +180,10 @@ export RUST_LOG=info
 cargo run
 ```
 
-Or copy `.env.example` to `.env` and customize:
+When building from source, you can copy `.env.example` to `.env` and customize:
 
 ```bash
-# Copy
+# Copy (only needed when running from source)
 cp .env.example .env
 
 # Edit .env with your configuration
