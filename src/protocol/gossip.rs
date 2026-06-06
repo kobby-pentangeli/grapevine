@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::broadcast;
 use tokio::time::{self, sleep};
 use tracing::{debug, info, trace, warn};
 
@@ -35,7 +35,7 @@ pub struct Gossip {
     config: NodeConfig,
 
     /// TCP transport
-    transport: Arc<RwLock<Tcp>>,
+    transport: Arc<Tcp>,
 
     /// Connected peers
     peers: Arc<DashMap<PeerId, Peer>>,
@@ -49,8 +49,8 @@ pub struct Gossip {
     /// correct connection to use when sending direct messages.
     canonical_addrs: Arc<DashMap<SocketAddr, SocketAddr>>,
 
-    /// Application message handler
-    message_handler: Option<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
+    /// Application message handler, set once before the node starts.
+    message_handler: OnceLock<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
 
     /// Shutdown signal broadcaster
     shutdown_tx: broadcast::Sender<()>,
@@ -76,7 +76,7 @@ impl Gossip {
             transport = transport
                 .set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate)?;
         }
-        let transport = Arc::new(RwLock::new(transport));
+        let transport = Arc::new(transport);
         let seen_messages = Arc::new(DashMap::new());
         let epidemic_config = config.epidemic.clone();
 
@@ -96,7 +96,7 @@ impl Gossip {
             peers: Arc::new(DashMap::new()),
             seen_messages,
             canonical_addrs: Arc::new(DashMap::new()),
-            message_handler: None,
+            message_handler: OnceLock::new(),
             shutdown_tx,
             anti_entropy,
             epidemic_config,
@@ -104,23 +104,24 @@ impl Gossip {
     }
 
     /// Set the application message handler.
-    pub fn set_message_handler<F>(&mut self, handler: F)
+    ///
+    /// The handler is captured when the node starts, so it must be set before
+    /// [`Gossip::start`]; a second call has no effect.
+    pub fn set_message_handler<F>(&self, handler: F)
     where
         F: Fn(SocketAddr, Bytes) + Send + Sync + 'static,
     {
-        self.message_handler = Some(Arc::new(handler));
+        let _ = self.message_handler.set(Arc::new(handler));
     }
 
     /// Start the gossip protocol.
-    pub async fn start(&mut self) -> Result<()> {
-        {
-            let mut transport = self.transport.write().await;
-            transport.listen(self.config.bind_addr).await?;
-            let local_addr = transport
-                .local_addr()
-                .ok_or_else(|| Error::internal("Transport has no local address after listening"))?;
-            info!("Gossip node started on {local_addr}");
-        }
+    pub async fn start(&self) -> Result<()> {
+        self.transport.listen(self.config.bind_addr).await?;
+        let local_addr = self
+            .transport
+            .local_addr()
+            .ok_or_else(|| Error::internal("Transport has no local address after listening"))?;
+        info!("Gossip node started on {local_addr}");
 
         for peer in &self.config.bootstrap_peers {
             if let Err(e) = self.connect_to_peer(*peer).await {
@@ -142,7 +143,7 @@ impl Gossip {
 
     /// Connect to a peer.
     pub async fn connect_to_peer(&self, addr: SocketAddr) -> Result<()> {
-        let transport = self.transport.read().await;
+        let transport = &self.transport;
         transport.connect(addr).await?;
 
         let local_addr = transport
@@ -165,8 +166,6 @@ impl Gossip {
     pub async fn broadcast(&self, data: Bytes) -> Result<()> {
         let local_addr = self
             .transport
-            .read()
-            .await
             .local_addr()
             .ok_or_else(|| Error::internal("No local address"))?;
 
@@ -189,12 +188,10 @@ impl Gossip {
     /// The `peer` parameter should be the peer's canonical listening address.
     /// This method will automatically resolve it to the actual connection address.
     pub async fn send_to_peer(&self, peer: SocketAddr, data: Bytes) -> Result<()> {
-        let local_addr = {
-            let transport = self.transport.read().await;
-            transport
-                .local_addr()
-                .ok_or_else(|| Error::internal("No local address"))?
-        };
+        let local_addr = self
+            .transport
+            .local_addr()
+            .ok_or_else(|| Error::internal("No local address"))?;
 
         // Resolve canonical address to connection address.
         // If the peer is us (we're listening on `peer`), use peer directly.
@@ -206,12 +203,8 @@ impl Gossip {
             .unwrap_or(peer);
 
         // Check if peer is connected using the transport's peer list
-        {
-            let transport = self.transport.read().await;
-            let connected_peers = transport.peers();
-            if !connected_peers.contains(&connection_addr) {
-                return Err(Error::PeerNotFound(peer));
-            }
+        if !self.transport.peers().contains(&connection_addr) {
+            return Err(Error::PeerNotFound(peer));
         }
 
         let message = Message::new(
@@ -233,13 +226,12 @@ impl Gossip {
         );
 
         // Send to the connection address, not the canonical address
-        let transport = self.transport.read().await;
-        transport.send(connection_addr, message).await
+        self.transport.send(connection_addr, message).await
     }
 
     /// Get local address.
     pub async fn local_addr(&self) -> Option<SocketAddr> {
-        self.transport.read().await.local_addr()
+        self.transport.local_addr()
     }
 
     /// Get list of connected peers using their canonical (listening) addresses.
@@ -247,7 +239,7 @@ impl Gossip {
     /// This returns the peers' actual listening addresses rather than the ephemeral
     /// connection ports. Use these addresses for sending direct messages.
     pub async fn peer_list(&self) -> Vec<SocketAddr> {
-        let connection_addrs = self.transport.read().await.peers();
+        let connection_addrs = self.transport.peers();
 
         // Build reverse mapping: connection_addr -> canonical_addr
         let mut reverse_map: HashMap<SocketAddr, SocketAddr> = HashMap::new();
@@ -268,7 +260,7 @@ impl Gossip {
     pub async fn shutdown(&self) -> Result<()> {
         info!("Initiating graceful shutdown");
 
-        let local_addr = self.transport.read().await.local_addr();
+        let local_addr = self.transport.local_addr();
         if let Some(addr) = local_addr {
             let goodbye = Message::new(
                 addr,
@@ -277,12 +269,11 @@ impl Gossip {
                 },
             );
 
-            let peer_addrs = self.transport.read().await.peers();
+            let peer_addrs = self.transport.peers();
             debug!("Sending goodbye to {} peers", peer_addrs.len());
 
-            let transport_guard = self.transport.read().await;
             for peer_addr in peer_addrs {
-                if let Err(e) = transport_guard.send(peer_addr, goodbye.clone()).await {
+                if let Err(e) = self.transport.send(peer_addr, goodbye.clone()).await {
                     debug!("Failed to send goodbye to {peer_addr}: {e}");
                 }
             }
@@ -308,14 +299,14 @@ impl Gossip {
         let peers = Arc::clone(&self.peers);
         let seen_messages = Arc::clone(&self.seen_messages);
         let canonical_addrs = Arc::clone(&self.canonical_addrs);
-        let message_handler = self.message_handler.clone();
+        let message_handler = self.message_handler.get().cloned();
         let config = self.config.clone();
         let epidemic_config = self.epidemic_config.clone();
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             loop {
-                let recv_fut = async { transport.read().await.recv().await };
+                let recv_fut = transport.recv();
 
                 let result = tokio::select! {
                     _ = shutdown_rx.recv() => {
@@ -333,7 +324,7 @@ impl Gossip {
                     }
                 };
 
-                let local_addr = match transport.read().await.local_addr() {
+                let local_addr = match transport.local_addr() {
                     Some(addr) => addr,
                     None => continue,
                 };
@@ -498,17 +489,16 @@ impl Gossip {
                         break;
                     }
                     _ = ticker.tick() => {
-                        let transport_guard = transport.read().await;
-                        let local_addr = match transport_guard.local_addr() {
+                        let local_addr = match transport.local_addr() {
                             Some(addr) => addr,
                             None => continue,
                         };
 
                         let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
-                        let peer_addrs = transport_guard.peers();
+                        let peer_addrs = transport.peers();
 
                         for peer_addr in peer_addrs {
-                            if let Err(e) = transport_guard.send(peer_addr, heartbeat.clone()).await {
+                            if let Err(e) = transport.send(peer_addr, heartbeat.clone()).await {
                                 debug!("Failed to send heartbeat to {peer_addr}: {e}");
                             }
                         }
@@ -602,13 +592,12 @@ impl Gossip {
     }
 
     async fn gossip_to_fanout(
-        transport: &Arc<RwLock<Tcp>>,
+        transport: &Arc<Tcp>,
         _peers: &Arc<DashMap<PeerId, Peer>>,
         message: Message,
         fanout: usize,
     ) -> Result<()> {
-        let transport_guard = transport.read().await;
-        let mut peer_addrs = transport_guard.peers();
+        let mut peer_addrs = transport.peers();
 
         if peer_addrs.is_empty() {
             return Ok(());
@@ -621,7 +610,7 @@ impl Gossip {
         };
 
         for addr in selected {
-            if let Err(e) = transport_guard.send(addr, message.clone()).await {
+            if let Err(e) = transport.send(addr, message.clone()).await {
                 warn!("Failed to gossip to {addr}: {e}");
             }
         }
@@ -629,24 +618,23 @@ impl Gossip {
         Ok(())
     }
 
-    async fn handle_peer_list_request(transport: &Arc<RwLock<Tcp>>, sender: SocketAddr) {
-        let transport_guard = transport.read().await;
-        let peer_list = transport_guard.peers();
+    async fn handle_peer_list_request(transport: &Arc<Tcp>, sender: SocketAddr) {
+        let peer_list = transport.peers();
 
-        let local_addr = match transport_guard.local_addr() {
+        let local_addr = match transport.local_addr() {
             Some(addr) => addr,
             None => return,
         };
 
         let response = Message::new(local_addr, Payload::PeerListResponse { peers: peer_list });
-        if let Err(e) = transport_guard.send(sender, response).await {
+        if let Err(e) = transport.send(sender, response).await {
             warn!("Failed to send peer list to {sender}: {e}");
         }
     }
 
-    async fn handle_peer_list_response(transport: &Arc<RwLock<Tcp>>, peer_list: &[SocketAddr]) {
+    async fn handle_peer_list_response(transport: &Arc<Tcp>, peer_list: &[SocketAddr]) {
         for &peer_addr in peer_list {
-            if let Err(e) = transport.read().await.connect(peer_addr).await {
+            if let Err(e) = transport.connect(peer_addr).await {
                 debug!("Failed to connect to peer {peer_addr}: {e}");
             }
         }

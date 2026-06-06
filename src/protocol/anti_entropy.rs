@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
 use tokio::time;
 use tracing::{debug, trace, warn};
 
@@ -21,7 +20,6 @@ use crate::{Message, MessageId, Payload, Result, Tcp};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntiEntropyConfig {
     /// Interval between anti-entropy rounds
-    #[serde(with = "crate::serde_duration")]
     pub interval: Duration,
 
     /// Number of peers to sync with per round
@@ -104,7 +102,7 @@ pub struct MessageEntry {
 /// Anti-entropy engine for message repair.
 pub struct AntiEntropy {
     config: AntiEntropyConfig,
-    transport: Arc<RwLock<Tcp>>,
+    transport: Arc<Tcp>,
     seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
 }
 
@@ -112,7 +110,7 @@ impl AntiEntropy {
     /// Create new anti-entropy engine.
     pub fn new(
         config: AntiEntropyConfig,
-        transport: Arc<RwLock<Tcp>>,
+        transport: Arc<Tcp>,
         seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
     ) -> Self {
         Self {
@@ -138,13 +136,12 @@ impl AntiEntropy {
             loop {
                 ticker.tick().await;
 
-                let transport_guard = transport.read().await;
-                let local_addr = match transport_guard.local_addr() {
+                let local_addr = match transport.local_addr() {
                     Some(addr) => addr,
                     None => continue,
                 };
 
-                let mut peer_addrs = transport_guard.peers();
+                let mut peer_addrs = transport.peers();
                 if peer_addrs.is_empty() {
                     continue;
                 }
@@ -172,7 +169,7 @@ impl AntiEntropy {
                         },
                     );
 
-                    if let Err(e) = transport_guard.send(peer_addr, digest_msg).await {
+                    if let Err(e) = transport.send(peer_addr, digest_msg).await {
                         debug!("Failed to send anti-entropy digest to {peer_addr}: {e}");
                     }
                 }
@@ -195,7 +192,7 @@ impl AntiEntropy {
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
         remote_message_ids: Vec<MessageId>,
-        transport: &Arc<RwLock<Tcp>>,
+        transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
         let remote_digest = MessageDigest::from_vec(remote_message_ids);
@@ -225,8 +222,7 @@ impl AntiEntropy {
                     },
                 );
 
-                let transport_guard = transport.read().await;
-                if let Err(e) = transport_guard.send(peer_addr, response).await {
+                if let Err(e) = transport.send(peer_addr, response).await {
                     warn!("Failed to send message response to {peer_addr}: {e}");
                 }
             }
@@ -248,8 +244,7 @@ impl AntiEntropy {
                 },
             );
 
-            let transport_guard = transport.read().await;
-            if let Err(e) = transport_guard.send(peer_addr, request).await {
+            if let Err(e) = transport.send(peer_addr, request).await {
                 warn!("Failed to send message request to {peer_addr}: {e}");
             }
         }
@@ -262,7 +257,7 @@ impl AntiEntropy {
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
         requested_ids: Vec<MessageId>,
-        transport: &Arc<RwLock<Tcp>>,
+        transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
         let mut messages_to_send = Vec::new();
@@ -287,8 +282,7 @@ impl AntiEntropy {
                 },
             );
 
-            let transport_guard = transport.read().await;
-            if let Err(e) = transport_guard.send(peer_addr, response).await {
+            if let Err(e) = transport.send(peer_addr, response).await {
                 warn!("Failed to send message response to {peer_addr}: {e}");
             }
         }

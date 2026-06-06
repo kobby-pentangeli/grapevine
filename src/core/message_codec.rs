@@ -118,9 +118,9 @@ mod tests {
     use crate::Payload;
 
     #[test]
-    fn encode_decode_peer_discovery() {
+    fn encode_decode_peer_list_request() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let message = Message::new(addr, Payload::PeerDiscovery);
+        let message = Message::new(addr, Payload::PeerListRequest);
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -202,9 +202,9 @@ mod tests {
     }
 
     #[test]
-    fn partial_peer_discovery_message() {
+    fn partial_peer_list_request_message() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let message = Message::new(addr, Payload::PeerDiscovery);
+        let message = Message::new(addr, Payload::PeerListRequest);
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn multiple_messages_in_buffer() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let msg1 = Message::new(addr, Payload::PeerDiscovery);
+        let msg1 = Message::new(addr, Payload::PeerListRequest);
         let msg2 = Message::new(addr, Payload::Heartbeat { from: addr });
 
         let mut codec = MessageCodec::new();

@@ -102,15 +102,6 @@ pub enum Payload {
     /// User-defined application data
     Application(Bytes),
 
-    /// Peer discovery request
-    PeerDiscovery,
-
-    /// Peer list announcement
-    PeerAnnouncement {
-        /// List of known peers
-        peers: Vec<SocketAddr>,
-    },
-
     /// Heartbeat/keep-alive
     Heartbeat {
         /// Sender's address
@@ -183,7 +174,7 @@ mod tests {
     #[test]
     fn decrement_ttl() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let mut msg = Message::with_ttl(addr, Payload::PeerDiscovery, 2);
+        let mut msg = Message::with_ttl(addr, Payload::PeerListRequest, 2);
         assert!(msg.decrement_ttl());
         assert_eq!(msg.ttl, 1);
         assert!(msg.decrement_ttl());
@@ -201,24 +192,6 @@ mod tests {
         match payload {
             Payload::Application(d) => assert_eq!(d, data),
             _ => panic!("Expected Application payload"),
-        }
-
-        // Payload::PeerDiscovery
-        let payload = Payload::PeerDiscovery;
-        assert!(payload.is_protocol_message());
-
-        // Payload::PeerAnnouncement
-        let peers = vec![
-            "127.0.0.1:8001".parse().unwrap(),
-            "127.0.0.1:8002".parse().unwrap(),
-        ];
-        let payload = Payload::PeerAnnouncement {
-            peers: peers.clone(),
-        };
-        assert!(payload.is_protocol_message());
-        match payload {
-            Payload::PeerAnnouncement { peers: p } => assert_eq!(p, peers),
-            _ => panic!("Expected PeerAnnouncement payload"),
         }
 
         // Payload::Heartbeat
@@ -280,7 +253,7 @@ mod tests {
     fn multiple_messages_different_sequences() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let messages = (0..10)
-            .map(|_| Message::new(addr, Payload::PeerDiscovery))
+            .map(|_| Message::new(addr, Payload::PeerListRequest))
             .collect::<Vec<_>>();
 
         for i in 0..messages.len() - 1 {

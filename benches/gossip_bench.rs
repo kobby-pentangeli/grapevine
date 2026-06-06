@@ -88,9 +88,9 @@ fn payload_types(c: &mut Criterion) {
     let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
     let mut codec = MessageCodec::new();
 
-    // PeerDiscovery
-    group.bench_function("peer_discovery", |b| {
-        let message = Message::new(addr, Payload::PeerDiscovery);
+    // PeerListRequest
+    group.bench_function("peer_list_request", |b| {
+        let message = Message::new(addr, Payload::PeerListRequest);
         b.iter(|| {
             let mut buffer = bytes::BytesMut::new();
             codec

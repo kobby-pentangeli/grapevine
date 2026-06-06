@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 pub use node_config::{NodeConfig, NodeConfigBuilder};
-use tokio::sync::RwLock;
 use tracing::trace;
 
 use crate::{Gossip, Result};
@@ -67,7 +66,7 @@ pub struct Node {
     pub config: NodeConfig,
 
     /// Gossip protocol engine
-    protocol: Arc<RwLock<Gossip>>,
+    protocol: Arc<Gossip>,
 }
 
 impl Node {
@@ -77,14 +76,13 @@ impl Node {
 
         Ok(Self {
             config,
-            protocol: Arc::new(RwLock::new(protocol)),
+            protocol: Arc::new(protocol),
         })
     }
 
     /// Start the node.
     pub async fn start(&self) -> Result<()> {
-        let mut protocol = self.protocol.write().await;
-        protocol.start().await?;
+        self.protocol.start().await?;
         trace!("Node started");
         Ok(())
     }
@@ -94,8 +92,7 @@ impl Node {
     /// Messages are propagated using epidemic broadcast with configurable
     /// forward probability and anti-entropy for reliability.
     pub async fn broadcast(&self, data: impl Into<Bytes>) -> Result<()> {
-        let protocol = self.protocol.read().await;
-        protocol.broadcast(data.into()).await
+        self.protocol.broadcast(data.into()).await
     }
 
     /// Send a direct message to a specific peer.
@@ -112,8 +109,7 @@ impl Node {
     ///
     /// Returns an error if the peer is not connected or if sending fails.
     pub async fn send_to_peer(&self, peer: SocketAddr, data: impl Into<Bytes>) -> Result<()> {
-        let protocol = self.protocol.read().await;
-        protocol.send_to_peer(peer, data.into()).await
+        self.protocol.send_to_peer(peer, data.into()).await
     }
 
     /// Set a handler for received application messages.
@@ -124,20 +120,17 @@ impl Node {
     where
         F: Fn(SocketAddr, Bytes) + Send + Sync + 'static,
     {
-        let mut protocol = self.protocol.write().await;
-        protocol.set_message_handler(handler);
+        self.protocol.set_message_handler(handler);
     }
 
     /// Get the node's local address.
     pub async fn local_addr(&self) -> Option<SocketAddr> {
-        let protocol = self.protocol.read().await;
-        protocol.local_addr().await
+        self.protocol.local_addr().await
     }
 
     /// Get connected peer addresses.
     pub async fn peers(&self) -> Vec<SocketAddr> {
-        let protocol = self.protocol.read().await;
-        protocol.peer_list().await
+        self.protocol.peer_list().await
     }
 
     /// Shutdown the node gracefully.
@@ -146,8 +139,7 @@ impl Node {
     /// tasks, and cleans up resources. The shutdown process typically completes
     /// within 500ms.
     pub async fn shutdown(&self) -> Result<()> {
-        let protocol = self.protocol.read().await;
-        protocol.shutdown().await?;
+        self.protocol.shutdown().await?;
         trace!("Node shut down");
         Ok(())
     }

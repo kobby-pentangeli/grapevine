@@ -1,7 +1,7 @@
 //! TCP transport implementation.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -23,8 +23,8 @@ const PEER_REGISTRATION_CHECK_DELAY_MS: u64 = 10;
 
 /// TCP transport for gossip messages.
 pub struct Tcp {
-    /// Local listening address
-    local_addr: Option<SocketAddr>,
+    /// Local listening address, set once when the transport begins listening.
+    local_addr: OnceLock<SocketAddr>,
 
     /// Active peer connections
     peers: Arc<DashMap<SocketAddr, Peer>>,
@@ -53,7 +53,7 @@ impl Tcp {
         let (message_tx, message_rx) = mpsc::unbounded_channel();
 
         Self {
-            local_addr: None,
+            local_addr: OnceLock::new(),
             peers: Arc::new(DashMap::new()),
             message_rx: Arc::new(Mutex::new(message_rx)),
             message_tx,
@@ -75,13 +75,13 @@ impl Tcp {
     }
 
     /// Start listening on the given address.
-    pub async fn listen(&mut self, addr: SocketAddr) -> Result<()> {
+    pub async fn listen(&self, addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| Error::Connection { addr, source: e })?;
 
         let local_addr = listener.local_addr().map_err(Error::Io)?;
-        self.local_addr = Some(local_addr);
+        let _ = self.local_addr.set(local_addr);
 
         debug!("TCP transport listening on {local_addr}");
 
@@ -177,7 +177,7 @@ impl Tcp {
 
     /// Get local listening address.
     pub fn local_addr(&self) -> Option<SocketAddr> {
-        self.local_addr
+        self.local_addr.get().copied()
     }
 
     /// Get list of connected peers.

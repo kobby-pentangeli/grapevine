@@ -1,4 +1,4 @@
-//! Grapevine - A modern, asynchronous peer-to-peer gossip protocol library.
+//! Grapevine: a modern, asynchronous peer-to-peer gossip protocol library.
 //!
 //! This library provides an implementation of gossip protocols for
 //! distributed systems, supporting epidemic broadcast, anti-entropy, and
@@ -50,31 +50,7 @@ pub use core::{
 pub use error::Error;
 pub use node::{Node, NodeConfig, NodeConfigBuilder};
 pub use protocol::{AntiEntropy, AntiEntropyConfig, EpidemicConfig, Gossip, MessageEntry};
-pub use transport::{Tcp, Transport, TransportConfig};
+pub use transport::{Tcp, TransportConfig};
 
 /// Result type alias for all operations.
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Serde helper for Duration (de)serialization.
-pub mod serde_duration {
-    use std::time::Duration;
-
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    /// Serialize a Duration as u64 seconds.
-    pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_u64(duration.as_secs())
-    }
-
-    /// Deserialize a Duration from u64 seconds.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let secs = u64::deserialize(deserializer)?;
-        Ok(Duration::from_secs(secs))
-    }
-}

@@ -4,7 +4,6 @@
 
 # Build artifacts
 /target
-Cargo.lock
 
 # Editor temporary files
 *.swp
