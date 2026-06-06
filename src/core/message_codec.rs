@@ -54,7 +54,12 @@ impl Decoder for MessageCodec {
 
         let mut length_bytes = [0u8; 4];
         length_bytes.copy_from_slice(&src[..4]);
-        let length = u32::from_be_bytes(length_bytes) as usize;
+        let length = usize::try_from(u32::from_be_bytes(length_bytes)).map_err(|_| {
+            Error::MessageTooLarge {
+                size: usize::MAX,
+                max: self.max_frame_size,
+            }
+        })?;
 
         if length > self.max_frame_size {
             return Err(Error::MessageTooLarge {
@@ -91,9 +96,13 @@ impl Encoder<Message> for MessageCodec {
                 max: self.max_frame_size,
             });
         }
+        let length_prefix = u32::try_from(length).map_err(|_| Error::MessageTooLarge {
+            size: length,
+            max: self.max_frame_size,
+        })?;
 
         dst.reserve(4 + length);
-        dst.put_u32(length as u32);
+        dst.put_u32(length_prefix);
         dst.put_slice(&data);
 
         Ok(())

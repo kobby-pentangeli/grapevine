@@ -73,7 +73,7 @@ pub struct Node {
 impl Node {
     /// Create a new node with the given configuration.
     pub async fn new(config: NodeConfig) -> Result<Self> {
-        let protocol = Gossip::new(config.clone());
+        let protocol = Gossip::new(config.clone())?;
 
         Ok(Self {
             config,

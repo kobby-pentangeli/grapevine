@@ -46,7 +46,7 @@ Messages do not propagate indefinitely through:
 The protocol resists denial-of-service attacks via:
 
 - Per-peer token bucket rate limiting (100 capacity, 50 tokens/sec)
-- Maximum message size limits (default: 1MB)
+- Maximum message size limits (default: 10MB)
 - Automatic peer health tracking and disconnection
 
 ## Protocol Phases
@@ -264,7 +264,7 @@ RateLimitConfig {
 
 ### Message Size Limits
 
-Configurable maximum message size (default: 1MB):
+Configurable maximum message size (default: 10MB):
 
 - Prevents memory exhaustion attacks
 - Enforced at codec layer before deserialization

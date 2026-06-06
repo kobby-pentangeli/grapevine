@@ -26,7 +26,7 @@ Grapevine is structured in layers:
 
 - **Message**: Gossip message structure with ID, TTL, and payload variants
 - **MessageCodec**: Length-prefixed framing and bincode serialization
-  - Message size limit: 1MB default (configurable)
+  - Message size limit: 10MB default (configurable)
 - **Peer**: Represents a connected peer with health tracking
 - **PeerInfo**: Peer metadata with health score, failure tracking, state machine
 - **RateLimiter**: Per-peer token bucket rate limiting (100 capacity, 50 tokens/sec)

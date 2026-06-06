@@ -146,18 +146,23 @@ impl PeerInfo {
 
     /// Calculate health score (0.0 = poor, 1.0 = excellent).
     pub fn health_score(&self) -> f64 {
-        let total_attempts = self.messages_sent + self.message_failures;
+        let total_attempts = self.messages_sent.saturating_add(self.message_failures);
         if total_attempts == 0 {
             return 1.0;
         }
 
-        let success_rate = self.messages_sent as f64 / total_attempts as f64;
+        let sent = f64::from(u32::try_from(self.messages_sent).unwrap_or(u32::MAX));
+        let total = f64::from(u32::try_from(total_attempts).unwrap_or(u32::MAX));
+        let success_rate = sent / total;
 
-        let age_seconds = self.connected_at.elapsed().as_secs() as f64;
+        let age_seconds =
+            f64::from(u32::try_from(self.connected_at.elapsed().as_secs()).unwrap_or(u32::MAX));
         let age_bonus = (age_seconds / AGE_BONUS_DIVISOR).min(MAX_AGE_BONUS);
 
-        let consecutive_penalty = (self.consecutive_failures as f64 * CONSECUTIVE_FAILURE_PENALTY)
-            .min(MAX_CONSECUTIVE_PENALTY);
+        let consecutive_penalty =
+            (f64::from(u32::try_from(self.consecutive_failures).unwrap_or(u32::MAX))
+                * CONSECUTIVE_FAILURE_PENALTY)
+                .min(MAX_CONSECUTIVE_PENALTY);
 
         (success_rate + age_bonus - consecutive_penalty).clamp(0.0, 1.0)
     }

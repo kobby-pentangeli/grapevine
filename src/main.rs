@@ -231,7 +231,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     node.start().await?;
-    let local_addr = node.local_addr().await.expect("No local address");
+    let local_addr = node
+        .local_addr()
+        .await
+        .ok_or_else(|| io::Error::other("node has no local address after start"))?;
 
     display_banner();
 
@@ -305,17 +308,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Command::Status => {
                 let peers = node.peers().await;
-                let addr = node.local_addr().await;
+                let addr = node
+                    .local_addr()
+                    .await
+                    .map_or_else(|| "N/A".to_string(), |a| a.to_string());
 
                 println!();
                 println_colored(Color::Cyan, "Node Status:");
-                println_colored(
-                    Color::White,
-                    &format!(
-                        "  Local address: {}",
-                        addr.unwrap_or_else(|| "N/A".parse().unwrap())
-                    ),
-                );
+                println_colored(Color::White, &format!("  Local address: {addr}"));
                 println_colored(Color::White, &format!("  Connected peers: {}", peers.len()));
                 println_colored(
                     Color::White,

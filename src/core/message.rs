@@ -27,8 +27,8 @@ impl MessageId {
         let sequence = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as u64;
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
 
         Self {
             origin,

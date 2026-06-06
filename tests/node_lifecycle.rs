@@ -211,7 +211,7 @@ async fn validate_config_params() {
     assert!(maybe_config.is_err());
     match maybe_config {
         Err(grapevine::Error::Config(msg)) => {
-            assert!(msg.contains("rate_limit capacity must be > 0"));
+            assert!(msg.contains("Rate limit capacity must be greater than 0"));
         }
         _ => panic!("Expected Config error"),
     }

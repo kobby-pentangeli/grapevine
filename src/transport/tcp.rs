@@ -63,12 +63,15 @@ impl Tcp {
     }
 
     /// Enable rate limiting with the given configuration.
-    pub fn set_rate_limit(mut self, capacity: u32, refill_rate: u32) -> Self {
-        self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::with_params(
+    ///
+    /// # Errors
+    /// Returns [`Error::Config`] if `capacity` or `refill_rate` is zero.
+    pub fn set_rate_limit(mut self, capacity: u32, refill_rate: u32) -> Result<Self> {
+        self.rate_limiter = Some(Arc::new(Mutex::new(RateLimiter::try_with_params(
             capacity,
             refill_rate,
-        ))));
-        self
+        )?)));
+        Ok(self)
     }
 
     /// Start listening on the given address.

@@ -64,13 +64,17 @@ pub struct Gossip {
 
 impl Gossip {
     /// Create a new gossip protocol instance.
-    pub fn new(config: NodeConfig) -> Self {
+    ///
+    /// # Errors
+    /// Returns [`Error::Config`] if rate limiting is enabled with an invalid
+    /// capacity or refill rate.
+    pub fn new(config: NodeConfig) -> Result<Self> {
         let (shutdown_tx, _) = broadcast::channel(SHUTDOWN_CHANNEL_CAPACITY);
 
         let mut transport = Tcp::with_max_message_size(config.max_message_size);
         if config.rate_limit.enabled {
-            transport =
-                transport.set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate);
+            transport = transport
+                .set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate)?;
         }
         let transport = Arc::new(RwLock::new(transport));
         let seen_messages = Arc::new(DashMap::new());
@@ -86,7 +90,7 @@ impl Gossip {
             None
         };
 
-        Self {
+        Ok(Self {
             config,
             transport,
             peers: Arc::new(DashMap::new()),
@@ -96,7 +100,7 @@ impl Gossip {
             shutdown_tx,
             anti_entropy,
             epidemic_config,
-        }
+        })
     }
 
     /// Set the application message handler.
