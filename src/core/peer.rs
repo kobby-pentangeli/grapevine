@@ -116,7 +116,7 @@ impl PeerInfo {
     /// Update last seen timestamp.
     pub fn update_last_seen(&mut self) {
         self.last_seen = Instant::now();
-        if self.state == PeerState::Stale {
+        if matches!(self.state, PeerState::Connecting | PeerState::Stale) {
             self.state = PeerState::Connected;
         }
     }
@@ -220,6 +220,25 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_last_seen_drives_state_machine() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let mut info = PeerInfo::new(PeerId(addr));
+        assert_eq!(info.state, PeerState::Connecting);
+
+        info.update_last_seen();
+        assert_eq!(info.state, PeerState::Connected);
+
+        info.mark_stale();
+        assert_eq!(info.state, PeerState::Stale);
+        info.update_last_seen();
+        assert_eq!(info.state, PeerState::Connected);
+
+        info.mark_disconnected();
+        info.update_last_seen();
+        assert_eq!(info.state, PeerState::Disconnected);
+    }
 
     #[test]
     fn peer_info_saturating_counters() {

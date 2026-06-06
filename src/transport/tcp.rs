@@ -13,13 +13,7 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::{debug, error, warn};
 
 use crate::core::message_codec::MAX_FRAME_SIZE;
-use crate::{Error, Message, MessageCodec, Peer, PeerId, RateLimiter, Result};
-
-/// Maximum attempts to wait for peer registration after connection.
-const PEER_REGISTRATION_MAX_ATTEMPTS: u32 = 50;
-
-/// Delay between peer registration checks (milliseconds).
-const PEER_REGISTRATION_CHECK_DELAY_MS: u64 = 10;
+use crate::{Error, Message, MessageCodec, Peer, PeerId, PeerInfo, RateLimiter, Result};
 
 /// TCP transport for gossip messages.
 pub struct Tcp {
@@ -40,6 +34,9 @@ pub struct Tcp {
 
     /// Maximum message size in bytes
     max_message_size: usize,
+
+    /// Maximum number of simultaneous peer connections
+    max_peers: usize,
 }
 
 impl Tcp {
@@ -59,6 +56,7 @@ impl Tcp {
             message_tx,
             rate_limiter: None,
             max_message_size,
+            max_peers: usize::MAX,
         }
     }
 
@@ -72,6 +70,15 @@ impl Tcp {
             refill_rate,
         )?)));
         Ok(self)
+    }
+
+    /// Cap the number of simultaneous peer connections.
+    ///
+    /// Connections beyond `max_peers` are refused on both the inbound (accept)
+    /// and outbound (connect) paths. The default is unbounded.
+    pub fn set_max_peers(mut self, max_peers: usize) -> Self {
+        self.max_peers = max_peers;
+        self
     }
 
     /// Start listening on the given address.
@@ -89,11 +96,16 @@ impl Tcp {
         let message_tx = self.message_tx.clone();
         let rate_limiter = self.rate_limiter.clone();
         let max_message_size = self.max_message_size;
+        let max_peers = self.max_peers;
 
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, peer_addr)) => {
+                        if peers.len() >= max_peers {
+                            debug!("At max_peers ({max_peers}), refusing inbound from {peer_addr}");
+                            continue;
+                        }
                         debug!("Accepted connection from {peer_addr}");
                         Self::handle_connection(
                             stream,
@@ -116,9 +128,20 @@ impl Tcp {
 
     /// Connect to a peer.
     pub async fn connect(&self, addr: SocketAddr) -> Result<()> {
+        if self.local_addr() == Some(addr) {
+            return Err(Error::network(format!(
+                "refusing self-connection to {addr}"
+            )));
+        }
         if self.peers.contains_key(&addr) {
             debug!("Already connected to {addr}");
             return Ok(());
+        }
+        if self.peers.len() >= self.max_peers {
+            return Err(Error::network(format!(
+                "at max_peers ({}), refusing connection to {addr}",
+                self.max_peers
+            )));
         }
 
         let stream = TcpStream::connect(addr)
@@ -136,20 +159,7 @@ impl Tcp {
             self.max_message_size,
         );
 
-        for _ in 0..PEER_REGISTRATION_MAX_ATTEMPTS {
-            if self.peers.contains_key(&addr) {
-                return Ok(());
-            }
-            tokio::time::sleep(tokio::time::Duration::from_millis(
-                PEER_REGISTRATION_CHECK_DELAY_MS,
-            ))
-            .await;
-        }
-
-        Err(Error::Connection {
-            addr,
-            source: std::io::Error::new(std::io::ErrorKind::TimedOut, "peer registration timeout"),
-        })
+        Ok(())
     }
 
     /// Send a message to a peer.
@@ -185,6 +195,26 @@ impl Tcp {
         self.peers.iter().map(|entry| *entry.key()).collect()
     }
 
+    /// Snapshot every connected peer's address and current [`PeerInfo`].
+    pub fn peer_infos(&self) -> Vec<(SocketAddr, PeerInfo)> {
+        self.peers
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().info.clone()))
+            .collect()
+    }
+
+    /// Mark a connected peer as stale.
+    pub fn mark_stale(&self, addr: SocketAddr) {
+        if let Some(mut peer) = self.peers.get_mut(&addr) {
+            peer.info.mark_stale();
+        }
+    }
+
+    /// Drop a peer from the registry, returning whether it was present.
+    pub fn disconnect(&self, addr: SocketAddr) -> bool {
+        self.peers.remove(&addr).is_some()
+    }
+
     fn handle_connection(
         stream: TcpStream,
         peer_addr: SocketAddr,
@@ -193,17 +223,15 @@ impl Tcp {
         rate_limiter: Option<Arc<Mutex<RateLimiter>>>,
         max_message_size: usize,
     ) {
+        let (reader, writer) = stream.into_split();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
+
+        peers.insert(peer_addr, Peer::new(PeerId(peer_addr), tx));
+
+        let codec = MessageCodec::with_max_frame_size(max_message_size);
+        let read_peers = Arc::clone(&peers);
+
         tokio::spawn(async move {
-            let (reader, writer) = stream.into_split();
-
-            let (tx, mut rx) = mpsc::unbounded_channel::<Bytes>();
-
-            let peer = Peer::new(PeerId(peer_addr), tx);
-            peers.insert(peer_addr, peer);
-
-            let codec = MessageCodec::with_max_frame_size(max_message_size);
-
-            // Spawn writer task
             let write_task = {
                 let mut sink = FramedWrite::new(writer, codec.clone());
                 tokio::spawn(async move {
@@ -226,13 +254,16 @@ impl Tcp {
                 })
             };
 
-            // Spawn reader task
             let read_task = {
                 let mut stream = FramedRead::new(reader, codec);
                 tokio::spawn(async move {
                     while let Some(result) = stream.next().await {
                         match result {
                             Ok(message) => {
+                                if let Some(mut peer) = read_peers.get_mut(&peer_addr) {
+                                    peer.info.increment_received();
+                                }
+
                                 if let Some(ref limiter) = rate_limiter {
                                     let allowed = limiter.lock().await.allow_request(peer_addr);
                                     if !allowed {
@@ -249,7 +280,7 @@ impl Tcp {
                                 }
                             }
                             Err(e) => {
-                                error!("Error reading from {peer_addr}: {e}");
+                                debug!("Connection from {peer_addr} closed: {e}");
                                 break;
                             }
                         }
@@ -257,13 +288,11 @@ impl Tcp {
                 })
             };
 
-            // Wait for either task to complete
             tokio::select! {
                 _ = read_task => {},
                 _ = write_task => {},
             }
 
-            // Cleanup
             peers.remove(&peer_addr);
             debug!("Connection closed: {peer_addr}");
         });

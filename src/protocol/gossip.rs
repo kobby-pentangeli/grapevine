@@ -1,6 +1,7 @@
 //! Core gossip protocol engine.
 
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -14,8 +15,11 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     AntiEntropy, EpidemicConfig, Error, Message, MessageEntry, MessageId, NodeConfig, Payload,
-    Peer, PeerId, PeerState, Result, Tcp,
+    PeerInfo, PeerState, Result, Tcp,
 };
+
+/// Maps a peer's canonical address to its connection address.
+type ListeningAddrs = DashMap<SocketAddr, SocketAddr>;
 
 /// Shutdown broadcast channel capacity.
 const SHUTDOWN_CHANNEL_CAPACITY: usize = 16;
@@ -34,20 +38,17 @@ pub struct Gossip {
     /// Node configuration
     config: NodeConfig,
 
-    /// TCP transport
+    /// TCP transport, which owns the authoritative peer registry
     transport: Arc<Tcp>,
-
-    /// Connected peers
-    peers: Arc<DashMap<PeerId, Peer>>,
 
     /// Seen messages with full message data and metadata
     seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
 
-    /// Maps canonical peer addresses (listening addresses) to connection addresses (ephemeral ports).
+    /// Maps canonical peer addresses to connection addresses (ephemeral ports).
     /// When peer A connects to peer B, B sees the connection from an ephemeral port, but messages
     /// contain A's listening address in message.id.origin. This map allows us to look up the
     /// correct connection to use when sending direct messages.
-    canonical_addrs: Arc<DashMap<SocketAddr, SocketAddr>>,
+    listening_addrs: Arc<ListeningAddrs>,
 
     /// Application message handler, set once before the node starts.
     message_handler: OnceLock<Arc<dyn Fn(SocketAddr, Bytes) + Send + Sync>>,
@@ -71,7 +72,8 @@ impl Gossip {
     pub fn new(config: NodeConfig) -> Result<Self> {
         let (shutdown_tx, _) = broadcast::channel(SHUTDOWN_CHANNEL_CAPACITY);
 
-        let mut transport = Tcp::with_max_message_size(config.max_message_size);
+        let mut transport =
+            Tcp::with_max_message_size(config.max_message_size).set_max_peers(config.max_peers);
         if config.rate_limit.enabled {
             transport = transport
                 .set_rate_limit(config.rate_limit.capacity, config.rate_limit.refill_rate)?;
@@ -93,9 +95,8 @@ impl Gossip {
         Ok(Self {
             config,
             transport,
-            peers: Arc::new(DashMap::new()),
             seen_messages,
-            canonical_addrs: Arc::new(DashMap::new()),
+            listening_addrs: Arc::new(DashMap::new()),
             message_handler: OnceLock::new(),
             shutdown_tx,
             anti_entropy,
@@ -197,7 +198,7 @@ impl Gossip {
         // If the peer is us (we're listening on `peer`), use peer directly.
         // Otherwise, look up the connection address from our canonical mapping.
         let connection_addr = self
-            .canonical_addrs
+            .listening_addrs
             .get(&peer)
             .map(|entry| *entry.value())
             .unwrap_or(peer);
@@ -244,7 +245,7 @@ impl Gossip {
         // Build reverse mapping: connection_addr -> canonical_addr
         let mut reverse_map: HashMap<SocketAddr, SocketAddr> = HashMap::new();
 
-        for entry in self.canonical_addrs.iter() {
+        for entry in self.listening_addrs.iter() {
             let (canonical, connection) = (*entry.key(), *entry.value());
             reverse_map.insert(connection, canonical);
         }
@@ -284,9 +285,6 @@ impl Gossip {
 
         sleep(Duration::from_millis(SHUTDOWN_GRACE_PERIOD_MS)).await;
 
-        debug!("Clearing peer list");
-        self.peers.clear();
-
         debug!("Clearing message cache");
         self.seen_messages.clear();
 
@@ -296,9 +294,8 @@ impl Gossip {
 
     fn spawn_message_receiver(&self) {
         let transport = Arc::clone(&self.transport);
-        let peers = Arc::clone(&self.peers);
         let seen_messages = Arc::clone(&self.seen_messages);
-        let canonical_addrs = Arc::clone(&self.canonical_addrs);
+        let canonical_addrs = Arc::clone(&self.listening_addrs);
         let message_handler = self.message_handler.get().cloned();
         let config = self.config.clone();
         let epidemic_config = self.epidemic_config.clone();
@@ -343,11 +340,21 @@ impl Gossip {
                 trace!("Received message from {peer_addr}: {:?}", message.id);
 
                 match &message.payload {
+                    Payload::Heartbeat { from } => {
+                        trace!("Heartbeat from {from}");
+                    }
                     Payload::PeerListRequest => {
-                        Self::handle_peer_list_request(&transport, peer_addr).await;
+                        Self::handle_peer_list_request(&transport, &canonical_addrs, peer_addr)
+                            .await;
                     }
                     Payload::PeerListResponse { peers: peer_list } => {
-                        Self::handle_peer_list_response(&transport, peer_list).await;
+                        Self::handle_peer_list_response(
+                            &transport,
+                            &canonical_addrs,
+                            local_addr,
+                            peer_list,
+                        )
+                        .await;
                     }
                     Payload::AntiEntropyDigest { message_ids } => {
                         let _ = AntiEntropy::handle_digest(
@@ -377,21 +384,14 @@ impl Gossip {
                         );
                     }
                     Payload::Goodbye { reason } => {
-                        // Use canonical address (listening address) in logs instead of connection address
                         let canonical_addr = message.id.origin;
                         info!("Peer {canonical_addr} is leaving: {reason}");
-                        if let Some(peer_id) = peers
-                            .iter()
-                            .find(|p| p.value().id().0 == peer_addr)
-                            .map(|p| *p.key())
-                        {
-                            peers.remove(&peer_id);
-                            debug!("Removed peer {canonical_addr} from peer list");
+                        if transport.disconnect(peer_addr) {
+                            canonical_addrs.retain(|_, conn| *conn != peer_addr);
+                            debug!("Removed peer {canonical_addr} from registry");
                         }
                     }
                     Payload::DirectMessage { recipient, data } => {
-                        // Direct messages are only delivered to the intended recipient
-                        // and are not gossiped to other peers
                         if seen_messages.contains_key(&message.id) {
                             trace!("Duplicate direct message {}, ignoring", message.id);
                             continue;
@@ -413,9 +413,6 @@ impl Gossip {
                             }
                             debug!("Received direct message from {}", message.id.origin);
                         } else {
-                            // Not for us, drop immediately without storing to prevent DOS attacks.
-                            // Direct messages are point-to-point and should not be relayed,
-                            // so there's no need to track them if they're misdirected.
                             trace!(
                                 "Direct message {} not for us (intended for {}), dropping",
                                 message.id, recipient
@@ -460,16 +457,10 @@ impl Gossip {
 
                             let mut new_message = message.clone();
                             new_message.decrement_ttl();
-                            let _ = Self::gossip_to_fanout(
-                                &transport,
-                                &peers,
-                                new_message,
-                                config.fanout,
-                            )
-                            .await;
+                            let _ = Self::gossip_to_fanout(&transport, new_message, config.fanout)
+                                .await;
                         }
                     }
-                    _ => {}
                 }
             }
         });
@@ -509,12 +500,18 @@ impl Gossip {
     }
 
     fn spawn_peer_maintenance(&self) {
-        let peers = Arc::clone(&self.peers);
+        let transport = Arc::clone(&self.transport);
+        let canonical_addrs = Arc::clone(&self.listening_addrs);
         let timeout = self.config.peer_timeout;
+        let max_peers = self.config.max_peers;
+        let interval = (timeout / 2).clamp(
+            Duration::from_secs(1),
+            Duration::from_secs(PEER_MAINTENANCE_INTERVAL_SECS),
+        );
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            let mut ticker = time::interval(Duration::from_secs(PEER_MAINTENANCE_INTERVAL_SECS));
+            let mut ticker = time::interval(interval);
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
@@ -522,30 +519,22 @@ impl Gossip {
                         break;
                     }
                     _ = ticker.tick() => {
-                        let mut peers_to_mark_stale = Vec::new();
-                        let mut peers_to_disconnect = Vec::new();
-
-                        for entry in peers.iter() {
-                            let peer_info = &entry.value().info;
-
-                            if peer_info.should_disconnect() {
-                                peers_to_disconnect.push(*entry.key());
-                            } else if peer_info.is_stale(timeout) && peer_info.state != PeerState::Stale {
-                                peers_to_mark_stale.push(*entry.key());
+                        let infos = transport.peer_infos();
+                        for action in plan_maintenance(&infos, Instant::now(), timeout, max_peers) {
+                            match action {
+                                MaintenanceAction::MarkStale(addr) => {
+                                    transport.mark_stale(addr);
+                                    debug!("Marked peer {addr} as stale");
+                                }
+                                MaintenanceAction::Disconnect(addr) => {
+                                    if transport.disconnect(addr) {
+                                        info!("Disconnected peer {addr}");
+                                    }
+                                }
                             }
                         }
-
-                        for peer_id in peers_to_mark_stale {
-                            if let Some(mut peer) = peers.get_mut(&peer_id) {
-                                peer.info.mark_stale();
-                                debug!("Marked peer {peer_id} as stale");
-                            }
-                        }
-
-                        for peer_id in peers_to_disconnect {
-                            info!("Disconnecting unhealthy peer {peer_id}");
-                            peers.remove(&peer_id);
-                        }
+                        let live: HashSet<SocketAddr> = transport.peers().into_iter().collect();
+                        canonical_addrs.retain(|_, conn| live.contains(conn));
                     }
                 }
             }
@@ -588,15 +577,10 @@ impl Gossip {
     }
 
     async fn gossip_message(&self, message: Message) -> Result<()> {
-        Self::gossip_to_fanout(&self.transport, &self.peers, message, self.config.fanout).await
+        Self::gossip_to_fanout(&self.transport, message, self.config.fanout).await
     }
 
-    async fn gossip_to_fanout(
-        transport: &Arc<Tcp>,
-        _peers: &Arc<DashMap<PeerId, Peer>>,
-        message: Message,
-        fanout: usize,
-    ) -> Result<()> {
+    async fn gossip_to_fanout(transport: &Arc<Tcp>, message: Message, fanout: usize) -> Result<()> {
         let mut peer_addrs = transport.peers();
 
         if peer_addrs.is_empty() {
@@ -618,25 +602,173 @@ impl Gossip {
         Ok(())
     }
 
-    async fn handle_peer_list_request(transport: &Arc<Tcp>, sender: SocketAddr) {
-        let peer_list = transport.peers();
-
-        let local_addr = match transport.local_addr() {
-            Some(addr) => addr,
-            None => return,
+    async fn handle_peer_list_request(
+        transport: &Arc<Tcp>,
+        canonical_addrs: &ListeningAddrs,
+        sender: SocketAddr,
+    ) {
+        let Some(local_addr) = transport.local_addr() else {
+            return;
         };
 
-        let response = Message::new(local_addr, Payload::PeerListResponse { peers: peer_list });
+        let peers = known_canonical_peers(transport, canonical_addrs);
+        let response = Message::new(local_addr, Payload::PeerListResponse { peers });
         if let Err(e) = transport.send(sender, response).await {
             warn!("Failed to send peer list to {sender}: {e}");
         }
     }
 
-    async fn handle_peer_list_response(transport: &Arc<Tcp>, peer_list: &[SocketAddr]) {
-        for &peer_addr in peer_list {
-            if let Err(e) = transport.connect(peer_addr).await {
-                debug!("Failed to connect to peer {peer_addr}: {e}");
+    async fn handle_peer_list_response(
+        transport: &Arc<Tcp>,
+        canonical_addrs: &ListeningAddrs,
+        local_addr: SocketAddr,
+        peer_list: &[SocketAddr],
+    ) {
+        let connected: HashSet<SocketAddr> = transport.peers().into_iter().collect();
+
+        for &peer in peer_list {
+            let already = connected.contains(&peer)
+                || canonical_addrs
+                    .get(&peer)
+                    .is_some_and(|conn| connected.contains(conn.value()));
+            if peer == local_addr || already {
+                continue;
+            }
+
+            if let Err(e) = transport.connect(peer).await {
+                debug!("Failed to connect to advertised peer {peer}: {e}");
             }
         }
+    }
+}
+
+fn known_canonical_peers(transport: &Tcp, canonical_addrs: &ListeningAddrs) -> Vec<SocketAddr> {
+    let live: HashSet<SocketAddr> = transport.peers().into_iter().collect();
+    canonical_addrs
+        .iter()
+        .filter(|entry| live.contains(entry.value()))
+        .map(|entry| *entry.key())
+        .collect()
+}
+
+/// A change the maintenance loop should apply to the peer registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaintenanceAction {
+    /// Demote a peer that has gone quiet to `Stale`.
+    MarkStale(SocketAddr),
+    /// Evict a peer from the registry.
+    Disconnect(SocketAddr),
+}
+
+/// Decide the maintenance actions for the current peer set.
+///
+/// A peer is disconnected when it has exhausted its consecutive-failure budget
+/// or has been silent past twice the timeout (`Stale -> Disconnected`); it is
+/// demoted to `Stale` after one timeout of silence (`Connected -> Stale`); and,
+/// as a safety net should admission control ever be bypassed, the lowest
+/// [`PeerInfo::health_score`] peers are evicted down to `max_peers`.
+fn plan_maintenance(
+    infos: &[(SocketAddr, PeerInfo)],
+    now: Instant,
+    peer_timeout: Duration,
+    max_peers: usize,
+) -> Vec<MaintenanceAction> {
+    let disconnect_deadline = peer_timeout.saturating_mul(2);
+    let mut actions = Vec::new();
+    let mut survivors: Vec<(SocketAddr, &PeerInfo)> = Vec::new();
+
+    for (addr, info) in infos {
+        let silence = now.saturating_duration_since(info.last_seen);
+        if info.should_disconnect() || silence > disconnect_deadline {
+            actions.push(MaintenanceAction::Disconnect(*addr));
+        } else {
+            if silence > peer_timeout && info.state == PeerState::Connected {
+                actions.push(MaintenanceAction::MarkStale(*addr));
+            }
+            survivors.push((*addr, info));
+        }
+    }
+
+    if survivors.len() > max_peers {
+        let excess = survivors.len().saturating_sub(max_peers);
+        survivors.sort_by(|(_, a), (_, b)| {
+            a.health_score()
+                .partial_cmp(&b.health_score())
+                .unwrap_or(Ordering::Equal)
+        });
+        actions.extend(
+            survivors
+                .into_iter()
+                .take(excess)
+                .map(|(addr, _)| MaintenanceAction::Disconnect(addr)),
+        );
+    }
+
+    actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PeerId;
+
+    fn connected_peer(addr: SocketAddr) -> PeerInfo {
+        let mut info = PeerInfo::new(PeerId(addr));
+        info.state = PeerState::Connected;
+        info
+    }
+
+    #[test]
+    fn marks_silent_peer_stale() {
+        let addr = "127.0.0.1:1".parse().unwrap();
+        let info = connected_peer(addr);
+        let now = info.last_seen + Duration::from_secs(15);
+
+        let actions = plan_maintenance(&[(addr, info)], now, Duration::from_secs(10), 50);
+        assert_eq!(actions, vec![MaintenanceAction::MarkStale(addr)]);
+    }
+
+    #[test]
+    fn disconnects_after_consecutive_failures() {
+        let addr = "127.0.0.1:2".parse().unwrap();
+        let mut info = connected_peer(addr);
+        info.consecutive_failures = 10;
+        let now = info.last_seen;
+
+        let actions = plan_maintenance(&[(addr, info)], now, Duration::from_secs(10), 50);
+        assert_eq!(actions, vec![MaintenanceAction::Disconnect(addr)]);
+    }
+
+    #[test]
+    fn disconnects_after_prolonged_silence() {
+        let addr = "127.0.0.1:3".parse().unwrap();
+        let info = connected_peer(addr);
+        let now = info.last_seen + Duration::from_secs(25);
+
+        let actions = plan_maintenance(&[(addr, info)], now, Duration::from_secs(10), 50);
+        assert_eq!(actions, vec![MaintenanceAction::Disconnect(addr)]);
+    }
+
+    #[test]
+    fn evicts_lowest_health_over_cap() {
+        let healthy_addr = "127.0.0.1:4".parse().unwrap();
+        let unhealthy_addr = "127.0.0.1:5".parse().unwrap();
+
+        let mut healthy = connected_peer(healthy_addr);
+        healthy.messages_sent = 100;
+        healthy.message_failures = 0;
+
+        let mut unhealthy = connected_peer(unhealthy_addr);
+        unhealthy.messages_sent = 1;
+        unhealthy.message_failures = 50;
+
+        let now = healthy.last_seen;
+        let actions = plan_maintenance(
+            &[(healthy_addr, healthy), (unhealthy_addr, unhealthy)],
+            now,
+            Duration::from_secs(10),
+            1,
+        );
+        assert_eq!(actions, vec![MaintenanceAction::Disconnect(unhealthy_addr)]);
     }
 }
