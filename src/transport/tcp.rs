@@ -190,6 +190,12 @@ impl Tcp {
         self.local_addr.get().copied()
     }
 
+    /// The maximum serialized frame size, in bytes, this transport will emit or
+    /// accept. Repair logic uses it to keep anti-entropy responses deliverable.
+    pub fn max_message_size(&self) -> usize {
+        self.max_message_size
+    }
+
     /// Get list of connected peers.
     pub fn peers(&self) -> Vec<SocketAddr> {
         self.peers.iter().map(|entry| *entry.key()).collect()

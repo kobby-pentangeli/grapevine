@@ -16,6 +16,11 @@ use tracing::{debug, trace, warn};
 
 use crate::{Message, MessageId, Payload, Result, Tcp};
 
+/// Space, in bytes, withheld from the frame budget so that bincode's
+/// variable-length count prefix can grow as a chunk fills without pushing the
+/// frame past the limit.
+const CHUNK_LENGTH_PREFIX_RESERVE: usize = 8;
+
 /// Anti-entropy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AntiEntropyConfig {
@@ -62,9 +67,8 @@ impl MessageDigest {
     /// Compute the difference between this (`self`) digest and another (`other`),
     /// returning the values that are in `self` but not `other`.
     pub fn diff(&self, other: &MessageDigest) -> Vec<MessageId> {
-        other
-            .message_ids
-            .difference(&self.message_ids)
+        self.message_ids
+            .difference(&other.message_ids)
             .copied()
             .collect()
     }
@@ -207,25 +211,12 @@ impl AntiEntropy {
                 missing_from_remote.len()
             );
 
-            let mut messages_to_send = Vec::new();
-            for msg_id in &missing_from_remote {
-                if let Some(entry) = seen_messages.get(msg_id) {
-                    messages_to_send.push(entry.value().message.clone());
-                }
-            }
+            let messages_to_send = missing_from_remote
+                .iter()
+                .filter_map(|msg_id| seen_messages.get(msg_id).map(|e| e.value().message.clone()))
+                .collect();
 
-            if !messages_to_send.is_empty() {
-                let response = Message::new(
-                    local_addr,
-                    Payload::MessageResponse {
-                        messages: messages_to_send,
-                    },
-                );
-
-                if let Err(e) = transport.send(peer_addr, response).await {
-                    warn!("Failed to send message response to {peer_addr}: {e}");
-                }
-            }
+            Self::send_message_responses(local_addr, peer_addr, messages_to_send, transport).await;
         }
 
         let missing_from_local = remote_digest.diff(&local_digest);
@@ -260,13 +251,10 @@ impl AntiEntropy {
         transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
-        let mut messages_to_send = Vec::new();
-
-        for msg_id in &requested_ids {
-            if let Some(entry) = seen_messages.get(msg_id) {
-                messages_to_send.push(entry.value().message.clone());
-            }
-        }
+        let messages_to_send = requested_ids
+            .iter()
+            .filter_map(|msg_id| seen_messages.get(msg_id).map(|e| e.value().message.clone()))
+            .collect::<Vec<Message>>();
 
         if !messages_to_send.is_empty() {
             debug!(
@@ -274,20 +262,25 @@ impl AntiEntropy {
                 messages_to_send.len(),
                 peer_addr
             );
+            Self::send_message_responses(local_addr, peer_addr, messages_to_send, transport).await;
+        }
 
-            let response = Message::new(
-                local_addr,
-                Payload::MessageResponse {
-                    messages: messages_to_send,
-                },
-            );
+        Ok(())
+    }
 
+    /// Send repaired `messages` as one or more frame-bounded `MessageResponse`s.
+    async fn send_message_responses(
+        local_addr: SocketAddr,
+        peer_addr: SocketAddr,
+        messages: Vec<Message>,
+        transport: &Arc<Tcp>,
+    ) {
+        for response in chunk_message_responses(local_addr, messages, transport.max_message_size())
+        {
             if let Err(e) = transport.send(peer_addr, response).await {
                 warn!("Failed to send message response to {peer_addr}: {e}");
             }
         }
-
-        Ok(())
     }
 
     /// Handle message response containing missing messages.
@@ -321,5 +314,176 @@ impl AntiEntropy {
                 handler(message.id.origin, data.clone());
             }
         }
+    }
+}
+
+/// Split repaired `messages` into one or more `MessageResponse`s, each of which
+/// serializes within `max_frame_size`.
+fn chunk_message_responses(
+    local_addr: SocketAddr,
+    messages: Vec<Message>,
+    max_frame_size: usize,
+) -> Vec<Message> {
+    let encoded_len = |message: &Message| {
+        bincode::serde::encode_to_vec(message, bincode::config::standard())
+            .ok()
+            .map(|bytes| bytes.len())
+    };
+
+    let envelope = Message::new(
+        local_addr,
+        Payload::MessageResponse {
+            messages: Vec::new(),
+        },
+    );
+    let Some(envelope_len) = encoded_len(&envelope) else {
+        return Vec::new();
+    };
+    let budget = max_frame_size
+        .saturating_sub(envelope_len)
+        .saturating_sub(CHUNK_LENGTH_PREFIX_RESERVE);
+
+    let wrap =
+        |messages: Vec<Message>| Message::new(local_addr, Payload::MessageResponse { messages });
+
+    let mut responses = Vec::new();
+    let mut batch: Vec<Message> = Vec::new();
+    let mut batch_len = 0usize;
+
+    for message in messages {
+        let Some(len) = encoded_len(&message) else {
+            continue;
+        };
+        if len > budget {
+            warn!(
+                "Dropping un-chunkable repair message {} ({len} B over frame budget {budget} B)",
+                message.id
+            );
+            continue;
+        }
+        if !batch.is_empty() && batch_len.saturating_add(len) > budget {
+            responses.push(wrap(std::mem::take(&mut batch)));
+            batch_len = 0;
+        }
+        batch_len = batch_len.saturating_add(len);
+        batch.push(message);
+    }
+
+    if !batch.is_empty() {
+        responses.push(wrap(batch));
+    }
+
+    responses
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::message_codec::MAX_FRAME_SIZE;
+
+    fn addr(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn app_message(origin: SocketAddr, byte: u8, len: usize) -> Message {
+        Message::new(origin, Payload::Application(vec![byte; len].into()))
+    }
+
+    fn frame_len(message: &Message) -> usize {
+        bincode::serde::encode_to_vec(message, bincode::config::standard())
+            .expect("message encodes")
+            .len()
+    }
+
+    #[test]
+    fn diff_returns_values_in_self_not_other() {
+        let local = addr(1);
+        let shared = MessageId::new(local);
+        let only_self = MessageId::new(local);
+        let only_other = MessageId::new(local);
+
+        let mut a = MessageDigest::new();
+        a.add(shared);
+        a.add(only_self);
+
+        let mut b = MessageDigest::new();
+        b.add(shared);
+        b.add(only_other);
+
+        let a_not_b = a.diff(&b);
+        assert_eq!(
+            a_not_b,
+            vec![only_self],
+            "self.diff(other) is self minus other"
+        );
+
+        let b_not_a = b.diff(&a);
+        assert_eq!(b_not_a, vec![only_other], "diff is not symmetric");
+
+        assert!(
+            a.diff(&a).is_empty(),
+            "a digest differs from itself by nothing"
+        );
+    }
+
+    #[test]
+    fn chunking_keeps_every_frame_within_the_limit() {
+        let local = addr(1);
+        let origin = addr(2);
+        // Each ~512 B message; a 2 KB budget forces several chunks.
+        let messages = (0..16)
+            .map(|i| app_message(origin, i, 512))
+            .collect::<Vec<Message>>();
+        let total = messages.len();
+        let max_frame_size = 2048;
+
+        let responses = chunk_message_responses(local, messages, max_frame_size);
+
+        assert!(responses.len() > 1, "an over-budget batch must split");
+        let mut carried = 0;
+        for response in &responses {
+            assert!(
+                frame_len(response) <= max_frame_size,
+                "no chunk may exceed the frame limit"
+            );
+            match &response.payload {
+                Payload::MessageResponse { messages } => carried += messages.len(),
+                other => panic!("expected MessageResponse, got {other:?}"),
+            }
+        }
+        assert_eq!(carried, total, "chunking preserves every message");
+    }
+
+    #[test]
+    fn chunking_drops_a_message_that_cannot_fit_alone() {
+        let local = addr(1);
+        let origin = addr(2);
+        let small = app_message(origin, 1, 100);
+        let oversized = app_message(origin, 2, 4096);
+
+        let responses = chunk_message_responses(local, vec![small.clone(), oversized], 2048);
+
+        let carried = responses
+            .iter()
+            .flat_map(|response| match &response.payload {
+                Payload::MessageResponse { messages } => messages.iter().map(|m| m.id),
+                _ => unreachable!(),
+            })
+            .collect::<Vec<MessageId>>();
+        assert_eq!(
+            carried,
+            vec![small.id],
+            "only the deliverable message survives"
+        );
+    }
+
+    #[test]
+    fn chunking_fits_a_small_batch_in_one_frame() {
+        let local = addr(1);
+        let origin = addr(2);
+        let messages = vec![app_message(origin, 1, 64), app_message(origin, 2, 64)];
+
+        let responses = chunk_message_responses(local, messages, MAX_FRAME_SIZE);
+        assert_eq!(responses.len(), 1, "a small batch needs a single frame");
     }
 }
