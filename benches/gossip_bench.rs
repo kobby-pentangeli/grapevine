@@ -24,7 +24,7 @@ fn message_encoding(c: &mut Criterion) {
     // Benchmark different message sizes
     for size in [100, 1024, 10_000, 100_000].iter() {
         let data = Bytes::from(vec![0u8; *size]);
-        let message = Message::new(addr, Payload::Application(data));
+        let message = Message::new(addr, 0, Payload::Application(data));
 
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), size, |b, _| {
@@ -51,7 +51,7 @@ fn message_decoding(c: &mut Criterion) {
     // Pre-encode messages of different sizes
     for size in [100, 1024, 10_000, 100_000].iter() {
         let data = Bytes::from(vec![0u8; *size]);
-        let message = Message::new(addr, Payload::Application(data));
+        let message = Message::new(addr, 0, Payload::Application(data));
 
         let mut buffer = bytes::BytesMut::new();
         codec.encode(message, &mut buffer).unwrap();
@@ -76,7 +76,7 @@ fn message_creation(c: &mut Criterion) {
     c.bench_function("message_creation", |b| {
         b.iter(|| {
             let data = Bytes::from("test message");
-            let message = Message::new(black_box(addr), Payload::Application(data));
+            let message = Message::new(black_box(addr), 0, Payload::Application(data));
             black_box(message);
         });
     });
@@ -90,7 +90,7 @@ fn payload_types(c: &mut Criterion) {
 
     // PeerListRequest
     group.bench_function("peer_list_request", |b| {
-        let message = Message::new(addr, Payload::PeerListRequest);
+        let message = Message::new(addr, 0, Payload::PeerListRequest);
         b.iter(|| {
             let mut buffer = bytes::BytesMut::new();
             codec
@@ -102,7 +102,7 @@ fn payload_types(c: &mut Criterion) {
 
     // Heartbeat
     group.bench_function("heartbeat", |b| {
-        let message = Message::new(addr, Payload::Heartbeat { from: addr });
+        let message = Message::new(addr, 0, Payload::Heartbeat { from: addr });
         b.iter(|| {
             let mut buffer = bytes::BytesMut::new();
             codec
@@ -115,7 +115,7 @@ fn payload_types(c: &mut Criterion) {
     // Application data
     group.bench_function("application", |b| {
         let data = Bytes::from("application payload");
-        let message = Message::new(addr, Payload::Application(data));
+        let message = Message::new(addr, 0, Payload::Application(data));
         b.iter(|| {
             let mut buffer = bytes::BytesMut::new();
             codec

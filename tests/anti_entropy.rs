@@ -14,7 +14,6 @@ use grapevine::{AntiEntropyConfig, EpidemicConfig, Node, NodeConfigBuilder};
 fn no_forwarding() -> EpidemicConfig {
     EpidemicConfig {
         forward_probability: 0.0,
-        max_forwards: 5,
     }
 }
 

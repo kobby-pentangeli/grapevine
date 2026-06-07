@@ -93,8 +93,7 @@ All behavior is configurable via `NodeConfig`:
   - `interval`: How often to sync (default: 30s)
   - `fanout`: Peers to sync with (default: 3)
 - `epidemic`: Epidemic broadcast configuration
-  - `forward_probability`: Probability of forwarding (default: 0.7)
-  - `max_forwards`: Maximum forwards per message (default: 5)
+  - `forward_probability`: Probability of forwarding a newly learned rumor (default: 0.7)
 - `rate_limit`: Rate limiting configuration
   - `enabled`: Enable/disable rate limiting (default: true)
   - `capacity`: Token bucket capacity (default: 100)

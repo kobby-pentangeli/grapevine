@@ -3,6 +3,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -61,6 +62,9 @@ pub struct Gossip {
 
     /// Epidemic broadcast config
     epidemic_config: EpidemicConfig,
+
+    /// Monotonic per-origin sequence counter for this node's own broadcasts.
+    sequence: AtomicU64,
 }
 
 impl Gossip {
@@ -101,6 +105,7 @@ impl Gossip {
             shutdown_tx,
             anti_entropy,
             epidemic_config,
+            sequence: AtomicU64::new(0),
         })
     }
 
@@ -152,11 +157,11 @@ impl Gossip {
             .ok_or_else(|| Error::internal("No local address"))?;
 
         // Send immediate heartbeat to establish canonical address mapping
-        let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
+        let heartbeat = Message::new(local_addr, 0, Payload::Heartbeat { from: local_addr });
         transport.send(addr, heartbeat).await?;
 
         // Request peer list
-        let message = Message::new(local_addr, Payload::PeerListRequest);
+        let message = Message::new(local_addr, 0, Payload::PeerListRequest);
         transport.send(addr, message).await?;
 
         info!("Connected to peer {addr}");
@@ -170,14 +175,14 @@ impl Gossip {
             .local_addr()
             .ok_or_else(|| Error::internal("No local address"))?;
 
-        let message = Message::new(local_addr, Payload::Application(data));
+        let sequence = self.sequence.fetch_add(1, AtomicOrdering::Relaxed);
+        let message = Message::new(local_addr, sequence, Payload::Application(data));
 
         self.seen_messages.insert(
             message.id,
             MessageEntry {
                 message: message.clone(),
                 first_seen: Instant::now(),
-                forward_count: 0,
             },
         );
 
@@ -210,19 +215,10 @@ impl Gossip {
 
         let message = Message::new(
             local_addr,
+            0,
             Payload::DirectMessage {
                 recipient: peer,
                 data,
-            },
-        );
-
-        // Mark as seen to avoid processing it if it comes back
-        self.seen_messages.insert(
-            message.id,
-            MessageEntry {
-                message: message.clone(),
-                first_seen: Instant::now(),
-                forward_count: 0,
             },
         );
 
@@ -265,6 +261,7 @@ impl Gossip {
         if let Some(addr) = local_addr {
             let goodbye = Message::new(
                 addr,
+                0,
                 Payload::Goodbye {
                     reason: "Normal shutdown".to_string(),
                 },
@@ -356,21 +353,21 @@ impl Gossip {
                         )
                         .await;
                     }
-                    Payload::AntiEntropyDigest { message_ids } => {
+                    Payload::AntiEntropyDigest { version_vector } => {
                         let _ = AntiEntropy::handle_digest(
                             local_addr,
                             peer_addr,
-                            message_ids.clone(),
+                            version_vector.clone(),
                             &transport,
                             &seen_messages,
                         )
                         .await;
                     }
-                    Payload::MessageRequest { ids } => {
+                    Payload::MessageRequest { version_vector } => {
                         let _ = AntiEntropy::handle_message_request(
                             local_addr,
                             peer_addr,
-                            ids.clone(),
+                            version_vector.clone(),
                             &transport,
                             &seen_messages,
                         )
@@ -392,22 +389,7 @@ impl Gossip {
                         }
                     }
                     Payload::DirectMessage { recipient, data } => {
-                        if seen_messages.contains_key(&message.id) {
-                            trace!("Duplicate direct message {}, ignoring", message.id);
-                            continue;
-                        }
-
-                        // Check if we are the intended recipient
                         if *recipient == local_addr {
-                            seen_messages.insert(
-                                message.id,
-                                MessageEntry {
-                                    message: message.clone(),
-                                    first_seen: Instant::now(),
-                                    forward_count: 0,
-                                },
-                            );
-
                             if let Some(ref handler) = message_handler {
                                 handler(message.id.origin, data.clone());
                             }
@@ -430,7 +412,6 @@ impl Gossip {
                             MessageEntry {
                                 message: message.clone(),
                                 first_seen: Instant::now(),
-                                forward_count: 0,
                             },
                         );
 
@@ -438,27 +419,18 @@ impl Gossip {
                             handler(message.id.origin, data.clone());
                         }
 
-                        if message.ttl > 1 {
-                            if !epidemic_config.should_forward() {
-                                trace!("Epidemic broadcast: not forwarding message {}", message.id);
-                                continue;
-                            }
-
-                            if let Some(mut entry) = seen_messages.get_mut(&message.id) {
-                                if entry.forward_count >= epidemic_config.max_forwards {
-                                    trace!(
-                                        "Message {} reached max forwards ({})",
-                                        message.id, epidemic_config.max_forwards
-                                    );
-                                    continue;
-                                }
-                                entry.forward_count += 1;
-                            }
-
+                        if message.ttl > 1 && epidemic_config.should_forward() {
+                            let exclude =
+                                fanout_exclusions(peer_addr, message.id.origin, &canonical_addrs);
                             let mut new_message = message.clone();
                             new_message.decrement_ttl();
-                            let _ = Self::gossip_to_fanout(&transport, new_message, config.fanout)
-                                .await;
+                            let _ = Self::gossip_to_fanout(
+                                &transport,
+                                new_message,
+                                config.fanout,
+                                &exclude,
+                            )
+                            .await;
                         }
                     }
                 }
@@ -485,7 +457,7 @@ impl Gossip {
                             None => continue,
                         };
 
-                        let heartbeat = Message::new(local_addr, Payload::Heartbeat { from: local_addr });
+                        let heartbeat = Message::new(local_addr, 0, Payload::Heartbeat { from: local_addr });
                         let peer_addrs = transport.peers();
 
                         for peer_addr in peer_addrs {
@@ -577,11 +549,30 @@ impl Gossip {
     }
 
     async fn gossip_message(&self, message: Message) -> Result<()> {
-        Self::gossip_to_fanout(&self.transport, message, self.config.fanout).await
+        Self::gossip_to_fanout(
+            &self.transport,
+            message,
+            self.config.fanout,
+            &HashSet::new(),
+        )
+        .await
     }
 
-    async fn gossip_to_fanout(transport: &Arc<Tcp>, message: Message, fanout: usize) -> Result<()> {
-        let mut peer_addrs = transport.peers();
+    /// Push `message` to up to `fanout` randomly selected peers, skipping any
+    /// connection in `exclude`. The exclusion set carries the connection the
+    /// message arrived on and the origin so a rumor is never echoed straight
+    /// back to the node it came from.
+    async fn gossip_to_fanout(
+        transport: &Arc<Tcp>,
+        message: Message,
+        fanout: usize,
+        exclude: &HashSet<SocketAddr>,
+    ) -> Result<()> {
+        let mut peer_addrs: Vec<SocketAddr> = transport
+            .peers()
+            .into_iter()
+            .filter(|addr| !exclude.contains(addr))
+            .collect();
 
         if peer_addrs.is_empty() {
             return Ok(());
@@ -612,7 +603,7 @@ impl Gossip {
         };
 
         let peers = known_canonical_peers(transport, canonical_addrs);
-        let response = Message::new(local_addr, Payload::PeerListResponse { peers });
+        let response = Message::new(local_addr, 0, Payload::PeerListResponse { peers });
         if let Err(e) = transport.send(sender, response).await {
             warn!("Failed to send peer list to {sender}: {e}");
         }
@@ -640,6 +631,19 @@ impl Gossip {
             }
         }
     }
+}
+
+/// Connections to skip when re-disseminating a received rumor
+fn fanout_exclusions(
+    sender: SocketAddr,
+    origin: SocketAddr,
+    canonical_addrs: &ListeningAddrs,
+) -> HashSet<SocketAddr> {
+    let mut exclude = HashSet::from([sender, origin]);
+    if let Some(connection) = canonical_addrs.get(&origin) {
+        exclude.insert(*connection.value());
+    }
+    exclude
 }
 
 fn known_canonical_peers(transport: &Tcp, canonical_addrs: &ListeningAddrs) -> Vec<SocketAddr> {
@@ -770,5 +774,29 @@ mod tests {
             1,
         );
         assert_eq!(actions, vec![MaintenanceAction::Disconnect(unhealthy_addr)]);
+    }
+
+    #[test]
+    fn fanout_excludes_sender_origin_and_mapped_connection() {
+        let origin: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let origin_conn: SocketAddr = "127.0.0.1:55000".parse().unwrap();
+        let sender: SocketAddr = "127.0.0.1:55001".parse().unwrap();
+
+        let canonical: ListeningAddrs = DashMap::new();
+        canonical.insert(origin, origin_conn);
+
+        let exclude = fanout_exclusions(sender, origin, &canonical);
+        assert!(
+            exclude.contains(&sender),
+            "the immediate sender is excluded"
+        );
+        assert!(
+            exclude.contains(&origin),
+            "the origin's canonical address is excluded"
+        );
+        assert!(
+            exclude.contains(&origin_conn),
+            "the origin's mapped connection is excluded"
+        );
     }
 }

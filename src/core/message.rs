@@ -1,30 +1,35 @@
 //! Message types for gossip protocol.
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-static MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Unique identifier for a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Unique identifier for a message: the originating node plus that node's
+/// monotonic per-origin sequence number.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct MessageId {
-    /// Origin node address
+    /// Canonical (listening) address of the node that originated the message.
     pub origin: SocketAddr,
-    /// Sequence number
+
+    /// Per-origin monotonic sequence number assigned by the originating node.
     pub sequence: u64,
-    /// Timestamp (milliseconds since epoch)
+
+    /// Creation time in milliseconds since the Unix epoch.
+    ///
+    /// Metadata only. Identity is `(origin, sequence)`: `timestamp` is excluded
+    /// from [`PartialEq`], [`Eq`], and [`Hash`] so a node's wall clock can
+    /// neither split one logical message into two keys nor collapse two distinct
+    /// messages into one.
     pub timestamp: u64,
 }
 
 impl MessageId {
-    /// Create a new message ID.
-    pub fn new(origin: SocketAddr) -> Self {
-        let sequence = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    /// Create an identifier for a message originated by `origin` at `sequence`.
+    pub fn new(origin: SocketAddr, sequence: u64) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
@@ -35,6 +40,21 @@ impl MessageId {
             sequence,
             timestamp,
         }
+    }
+}
+
+impl PartialEq for MessageId {
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin && self.sequence == other.sequence
+    }
+}
+
+impl Eq for MessageId {}
+
+impl Hash for MessageId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.origin.hash(state);
+        self.sequence.hash(state);
     }
 }
 
@@ -62,10 +82,10 @@ pub struct Message {
 }
 
 impl Message {
-    /// Create a new gossip message.
-    pub fn new(origin: SocketAddr, payload: Payload) -> Self {
+    /// Create a new gossip message originated by `origin` at `sequence`.
+    pub fn new(origin: SocketAddr, sequence: u64, payload: Payload) -> Self {
         Self {
-            id: MessageId::new(origin),
+            id: MessageId::new(origin, sequence),
             ttl: 10, // Default TTL
             payload,
             #[cfg(feature = "crypto")]
@@ -74,9 +94,9 @@ impl Message {
     }
 
     /// Create with custom TTL.
-    pub fn with_ttl(origin: SocketAddr, payload: Payload, ttl: u8) -> Self {
+    pub fn with_ttl(origin: SocketAddr, sequence: u64, payload: Payload, ttl: u8) -> Self {
         Self {
-            id: MessageId::new(origin),
+            id: MessageId::new(origin, sequence),
             ttl,
             payload,
             #[cfg(feature = "crypto")]
@@ -117,16 +137,20 @@ pub enum Payload {
         peers: Vec<SocketAddr>,
     },
 
-    /// Anti-entropy digest (message IDs this node knows about)
+    /// Anti-entropy digest: the sender's per-origin reconciliation summary.
     AntiEntropyDigest {
-        /// Set of known message IDs
-        message_ids: Vec<MessageId>,
+        /// For each origin, the lowest broadcast sequence the sender still
+        /// needs (equivalently, the length of its contiguous prefix). The
+        /// recipient pushes back every message it holds at or above this
+        /// sequence, so a smaller value requests more history.
+        version_vector: Vec<(SocketAddr, u64)>,
     },
 
-    /// Request for specific messages by ID
+    /// Pull request: the sender's per-origin reconciliation summary, asking the
+    /// recipient to push every message it holds beyond these sequences.
     MessageRequest {
-        /// Message IDs being requested
-        ids: Vec<MessageId>,
+        /// Same shape and meaning as `AntiEntropyDigest`'s `version_vector`.
+        version_vector: Vec<(SocketAddr, u64)>,
     },
 
     /// Response containing requested messages
@@ -162,19 +186,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_message_id() {
+    fn message_id_identity_is_origin_and_sequence_only() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let id1 = MessageId::new(addr);
-        let id2 = MessageId::new(addr);
-        assert_ne!(id1.sequence, id2.sequence);
-        assert_eq!(id1.origin, addr);
-        assert_eq!(id2.origin, addr);
+        let a = MessageId::new(addr, 7);
+        let b = MessageId::new(addr, 7);
+        let c = MessageId::new(addr, 8);
+
+        assert_eq!(
+            a, b,
+            "same (origin, sequence) is one identity regardless of the clock"
+        );
+        assert_ne!(a, c, "a different sequence is a different message");
+
+        let mut set = std::collections::HashSet::new();
+        assert!(set.insert(a));
+        assert!(!set.insert(b), "equal ids collapse to one hash-set entry");
+        assert!(set.insert(c));
     }
 
     #[test]
     fn decrement_ttl() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let mut msg = Message::with_ttl(addr, Payload::PeerListRequest, 2);
+        let mut msg = Message::with_ttl(addr, 0, Payload::PeerListRequest, 2);
         assert!(msg.decrement_ttl());
         assert_eq!(msg.ttl, 1);
         assert!(msg.decrement_ttl());
@@ -250,16 +283,14 @@ mod tests {
     }
 
     #[test]
-    fn multiple_messages_different_sequences() {
+    fn message_carries_its_explicit_sequence() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let messages = (0..10)
-            .map(|_| Message::new(addr, Payload::PeerListRequest))
+        let messages = (0u64..10)
+            .map(|seq| Message::new(addr, seq, Payload::PeerListRequest))
             .collect::<Vec<_>>();
 
-        for i in 0..messages.len() - 1 {
-            for j in i + 1..messages.len() {
-                assert_ne!(messages[i].id.sequence, messages[j].id.sequence);
-            }
+        for (index, message) in messages.iter().enumerate() {
+            assert_eq!(message.id.sequence, u64::try_from(index).unwrap());
         }
     }
 
@@ -271,6 +302,7 @@ mod tests {
 
         let message = Message::new(
             sender,
+            0,
             Payload::DirectMessage {
                 recipient,
                 data: data.clone(),

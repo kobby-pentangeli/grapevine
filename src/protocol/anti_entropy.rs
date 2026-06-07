@@ -1,9 +1,10 @@
 //! Anti-entropy protocol for ensuring message delivery.
 //!
-//! Periodically exchanges message digests with peers to detect
-//! and repair missing messages.
+//! Periodically reconciles the broadcast set with peers: each node
+//! summarizes what it holds as a per-origin `origin -> next-needed sequence` map and
+//! exchanges deltas, instead of shipping the full set of known message identifiers every round.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,54 +45,6 @@ impl Default for AntiEntropyConfig {
     }
 }
 
-/// Represents a digest of known messages.
-#[derive(Debug, Clone)]
-pub struct MessageDigest {
-    /// Set of known message IDs
-    pub message_ids: HashSet<MessageId>,
-}
-
-impl MessageDigest {
-    /// Create a new empty digest.
-    pub fn new() -> Self {
-        Self {
-            message_ids: HashSet::new(),
-        }
-    }
-
-    /// Add a message ID to the digest.
-    pub fn add(&mut self, id: MessageId) {
-        self.message_ids.insert(id);
-    }
-
-    /// Compute the difference between this (`self`) digest and another (`other`),
-    /// returning the values that are in `self` but not `other`.
-    pub fn diff(&self, other: &MessageDigest) -> Vec<MessageId> {
-        self.message_ids
-            .difference(&other.message_ids)
-            .copied()
-            .collect()
-    }
-
-    /// Convert to vector for serialization.
-    pub fn to_vec(&self) -> Vec<MessageId> {
-        self.message_ids.iter().copied().collect()
-    }
-
-    /// Create from vector.
-    pub fn from_vec(ids: Vec<MessageId>) -> Self {
-        Self {
-            message_ids: ids.into_iter().collect(),
-        }
-    }
-}
-
-impl Default for MessageDigest {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Entry tracking a seen message.
 #[derive(Debug, Clone)]
 pub struct MessageEntry {
@@ -99,8 +52,6 @@ pub struct MessageEntry {
     pub message: Message,
     /// When we first saw it
     pub first_seen: Instant,
-    /// Number of times forwarded
-    pub forward_count: u32,
 }
 
 /// Anti-entropy engine for message repair.
@@ -156,20 +107,20 @@ impl AntiEntropy {
                     peer_addrs.into_iter().take(config.fanout).collect()
                 };
 
-                let digest = Self::build_digest(&seen_messages);
-                let message_ids = digest.to_vec();
+                let version_vector = build_version_vector(&seen_messages);
 
                 trace!(
-                    "Anti-entropy round: sending digest with {} messages to {} peers",
-                    message_ids.len(),
+                    "Anti-entropy round: sending version vector ({} origins) to {} peers",
+                    version_vector.len(),
                     selected_peers.len()
                 );
 
                 for peer_addr in selected_peers {
                     let digest_msg = Message::new(
                         local_addr,
+                        0,
                         Payload::AntiEntropyDigest {
-                            message_ids: message_ids.clone(),
+                            version_vector: version_vector.clone(),
                         },
                     );
 
@@ -183,86 +134,57 @@ impl AntiEntropy {
         Ok(())
     }
 
-    fn build_digest(seen_messages: &DashMap<MessageId, MessageEntry>) -> MessageDigest {
-        let mut digest = MessageDigest::new();
-        for entry in seen_messages.iter() {
-            digest.add(*entry.key());
-        }
-        digest
-    }
-
-    /// Handle incoming anti-entropy digest.
+    /// Handle an incoming anti-entropy digest (the peer's version vector).
     pub async fn handle_digest(
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
-        remote_message_ids: Vec<MessageId>,
+        remote_version_vec: Vec<(SocketAddr, u64)>,
         transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
-        let remote_digest = MessageDigest::from_vec(remote_message_ids);
-        let local_digest = Self::build_digest(seen_messages);
+        let remote = remote_version_vec
+            .into_iter()
+            .collect::<HashMap<SocketAddr, u64>>();
 
-        let missing_from_remote = local_digest.diff(&remote_digest);
-
-        if !missing_from_remote.is_empty() {
-            debug!(
-                "Peer {} is missing {} messages, sending them",
-                peer_addr,
-                missing_from_remote.len()
-            );
-
-            let messages_to_send = missing_from_remote
-                .iter()
-                .filter_map(|msg_id| seen_messages.get(msg_id).map(|e| e.value().message.clone()))
-                .collect();
-
-            Self::send_message_responses(local_addr, peer_addr, messages_to_send, transport).await;
+        let to_send = messages_for_peer(seen_messages, &remote);
+        if !to_send.is_empty() {
+            debug!("Pushing {} messages to {}", to_send.len(), peer_addr);
+            Self::send_message_responses(local_addr, peer_addr, to_send, transport).await;
         }
 
-        let missing_from_local = remote_digest.diff(&local_digest);
-
-        if !missing_from_local.is_empty() {
-            debug!(
-                "We are missing {} messages from {}, requesting them",
-                missing_from_local.len(),
-                peer_addr
-            );
-
-            let request = Message::new(
-                local_addr,
-                Payload::MessageRequest {
-                    ids: missing_from_local,
-                },
-            );
-
-            if let Err(e) = transport.send(peer_addr, request).await {
-                warn!("Failed to send message request to {peer_addr}: {e}");
-            }
+        let request = Message::new(
+            local_addr,
+            0,
+            Payload::MessageRequest {
+                version_vector: build_version_vector(seen_messages),
+            },
+        );
+        if let Err(e) = transport.send(peer_addr, request).await {
+            warn!("Failed to send message request to {peer_addr}: {e}");
         }
 
         Ok(())
     }
 
-    /// Handle message request.
+    /// Handle a pull request: push every message we hold beyond the peer's
+    /// version vector. Terminal in the exchange (no further request is sent).
     pub async fn handle_message_request(
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
-        requested_ids: Vec<MessageId>,
+        remote_version_vec: Vec<(SocketAddr, u64)>,
         transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
     ) -> Result<()> {
-        let messages_to_send = requested_ids
-            .iter()
-            .filter_map(|msg_id| seen_messages.get(msg_id).map(|e| e.value().message.clone()))
-            .collect::<Vec<Message>>();
+        let remote: HashMap<SocketAddr, u64> = remote_version_vec.into_iter().collect();
 
-        if !messages_to_send.is_empty() {
+        let to_send = messages_for_peer(seen_messages, &remote);
+        if !to_send.is_empty() {
             debug!(
-                "Sending {} requested messages to {}",
-                messages_to_send.len(),
+                "Pushing {} requested messages to {}",
+                to_send.len(),
                 peer_addr
             );
-            Self::send_message_responses(local_addr, peer_addr, messages_to_send, transport).await;
+            Self::send_message_responses(local_addr, peer_addr, to_send, transport).await;
         }
 
         Ok(())
@@ -304,7 +226,6 @@ impl AntiEntropy {
                 MessageEntry {
                     message: message.clone(),
                     first_seen: Instant::now(),
-                    forward_count: 0,
                 },
             );
 
@@ -315,6 +236,54 @@ impl AntiEntropy {
             }
         }
     }
+}
+
+/// Summarize the broadcast set as a per-origin version vector: for each origin,
+/// the lowest sequence not yet held (the length of the contiguous prefix from
+/// `0`). A peer pushes back everything it holds at or above this sequence.
+fn build_version_vector(
+    seen_messages: &DashMap<MessageId, MessageEntry>,
+) -> Vec<(SocketAddr, u64)> {
+    let mut sequences: HashMap<SocketAddr, BTreeSet<u64>> = HashMap::new();
+    for entry in seen_messages.iter() {
+        let id = entry.key();
+        sequences.entry(id.origin).or_default().insert(id.sequence);
+    }
+
+    sequences
+        .into_iter()
+        .map(|(origin, seqs)| (origin, next_needed_sequence(&seqs)))
+        .collect()
+}
+
+/// The first sequence missing from `0`: the length of the contiguous prefix.
+/// Since `sequences` is sorted and unique, the prefix holds exactly while the
+/// `i`-th smallest element equals `i`.
+fn next_needed_sequence(sequences: &BTreeSet<u64>) -> u64 {
+    sequences
+        .iter()
+        .enumerate()
+        .take_while(|&(index, &sequence)| u64::try_from(index).is_ok_and(|i| i == sequence))
+        .count()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+/// Every message held at or above the peer's per-origin need (default `0` for an
+/// origin the peer has never seen). Conservative under gaps: a peer that holds
+/// messages past its own gap may receive a few it already has, which it dedups.
+fn messages_for_peer(
+    seen_messages: &DashMap<MessageId, MessageEntry>,
+    remote: &HashMap<SocketAddr, u64>,
+) -> Vec<Message> {
+    seen_messages
+        .iter()
+        .filter(|entry| {
+            let id = entry.key();
+            id.sequence >= remote.get(&id.origin).copied().unwrap_or(0)
+        })
+        .map(|entry| entry.value().message.clone())
+        .collect()
 }
 
 /// Split repaired `messages` into one or more `MessageResponse`s, each of which
@@ -332,6 +301,7 @@ fn chunk_message_responses(
 
     let envelope = Message::new(
         local_addr,
+        0,
         Payload::MessageResponse {
             messages: Vec::new(),
         },
@@ -344,7 +314,7 @@ fn chunk_message_responses(
         .saturating_sub(CHUNK_LENGTH_PREFIX_RESERVE);
 
     let wrap =
-        |messages: Vec<Message>| Message::new(local_addr, Payload::MessageResponse { messages });
+        |messages: Vec<Message>| Message::new(local_addr, 0, Payload::MessageResponse { messages });
 
     let mut responses = Vec::new();
     let mut batch: Vec<Message> = Vec::new();
@@ -385,8 +355,30 @@ mod tests {
         SocketAddr::from(([127, 0, 0, 1], port))
     }
 
+    fn broadcast(origin: SocketAddr, sequence: u64) -> Message {
+        Message::new(origin, sequence, Payload::Application(vec![0u8; 8].into()))
+    }
+
+    fn seen(messages: impl IntoIterator<Item = Message>) -> DashMap<MessageId, MessageEntry> {
+        let map = DashMap::new();
+        for message in messages {
+            map.insert(
+                message.id,
+                MessageEntry {
+                    message,
+                    first_seen: Instant::now(),
+                },
+            );
+        }
+        map
+    }
+
     fn app_message(origin: SocketAddr, byte: u8, len: usize) -> Message {
-        Message::new(origin, Payload::Application(vec![byte; len].into()))
+        Message::new(
+            origin,
+            u64::from(byte),
+            Payload::Application(vec![byte; len].into()),
+        )
     }
 
     fn frame_len(message: &Message) -> usize {
@@ -396,33 +388,58 @@ mod tests {
     }
 
     #[test]
-    fn diff_returns_values_in_self_not_other() {
-        let local = addr(1);
-        let shared = MessageId::new(local);
-        let only_self = MessageId::new(local);
-        let only_other = MessageId::new(local);
+    fn version_vector_reports_next_needed_per_origin() {
+        let a = addr(10);
+        let b = addr(11);
+        // a holds {0,1,2} -> needs 3; b holds {0,2} (gap at 1) -> needs 1.
+        let map = seen([
+            broadcast(a, 0),
+            broadcast(a, 1),
+            broadcast(a, 2),
+            broadcast(b, 0),
+            broadcast(b, 2),
+        ]);
 
-        let mut a = MessageDigest::new();
-        a.add(shared);
-        a.add(only_self);
-
-        let mut b = MessageDigest::new();
-        b.add(shared);
-        b.add(only_other);
-
-        let a_not_b = a.diff(&b);
+        let vv = build_version_vector(&map)
+            .into_iter()
+            .collect::<HashMap<SocketAddr, u64>>();
         assert_eq!(
-            a_not_b,
-            vec![only_self],
-            "self.diff(other) is self minus other"
+            vv.get(&a),
+            Some(&3),
+            "contiguous prefix advances to the gap"
         );
+        assert_eq!(vv.get(&b), Some(&1), "a gap caps the prefix at its start");
+    }
 
-        let b_not_a = b.diff(&a);
-        assert_eq!(b_not_a, vec![only_other], "diff is not symmetric");
+    #[test]
+    fn version_vector_with_a_leading_gap_needs_zero() {
+        let a = addr(10);
+        // Missing sequence 0 entirely: nothing is contiguous, so we need 0.
+        let map = seen([broadcast(a, 1), broadcast(a, 2)]);
+        let vv = build_version_vector(&map)
+            .into_iter()
+            .collect::<HashMap<SocketAddr, u64>>();
+        assert_eq!(vv.get(&a), Some(&0));
+    }
 
-        assert!(
-            a.diff(&a).is_empty(),
-            "a digest differs from itself by nothing"
+    #[test]
+    fn messages_for_peer_sends_at_or_above_remote_need() {
+        let a = addr(10);
+        let map = seen([broadcast(a, 0), broadcast(a, 1), broadcast(a, 2)]);
+
+        let remote = HashMap::from([(a, 1u64)]);
+        let mut seqs = messages_for_peer(&map, &remote)
+            .iter()
+            .map(|m| m.id.sequence)
+            .collect::<Vec<u64>>();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![1, 2], "only sequences >= the need are pushed");
+
+        let all = messages_for_peer(&map, &HashMap::new());
+        assert_eq!(
+            all.len(),
+            3,
+            "an unknown origin defaults to needing everything"
         );
     }
 

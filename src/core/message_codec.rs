@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn encode_decode_peer_list_request() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let message = Message::new(addr, Payload::PeerListRequest);
+        let message = Message::new(addr, 0, Payload::PeerListRequest);
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -137,7 +137,7 @@ mod tests {
     fn encode_decode_application_data() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let data = Bytes::from("Hello, Grapevine!");
-        let message = Message::new(addr, Payload::Application(data.clone()));
+        let message = Message::new(addr, 0, Payload::Application(data.clone()));
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn encode_decode_heartbeat() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let message = Message::new(addr, Payload::Heartbeat { from: addr });
+        let message = Message::new(addr, 0, Payload::Heartbeat { from: addr });
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -174,6 +174,7 @@ mod tests {
         ];
         let message = Message::new(
             addr,
+            0,
             Payload::PeerListResponse {
                 peers: peers.clone(),
             },
@@ -204,7 +205,7 @@ mod tests {
     #[test]
     fn partial_peer_list_request_message() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let message = Message::new(addr, Payload::PeerListRequest);
+        let message = Message::new(addr, 0, Payload::PeerListRequest);
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -223,7 +224,7 @@ mod tests {
     fn message_too_large() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let large_data = Bytes::from(vec![0u8; 11 * 1024 * 1024]); // 11 MB
-        let message = Message::new(addr, Payload::Application(large_data));
+        let message = Message::new(addr, 0, Payload::Application(large_data));
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
@@ -236,7 +237,7 @@ mod tests {
     fn custom_max_frame_size() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let data = Bytes::from(vec![0u8; 2000]);
-        let message = Message::new(addr, Payload::Application(data));
+        let message = Message::new(addr, 0, Payload::Application(data));
 
         let mut codec = MessageCodec::with_max_frame_size(1000);
         let mut buffer = BytesMut::new();
@@ -248,8 +249,8 @@ mod tests {
     #[test]
     fn multiple_messages_in_buffer() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let msg1 = Message::new(addr, Payload::PeerListRequest);
-        let msg2 = Message::new(addr, Payload::Heartbeat { from: addr });
+        let msg1 = Message::new(addr, 0, Payload::PeerListRequest);
+        let msg2 = Message::new(addr, 0, Payload::Heartbeat { from: addr });
 
         let mut codec = MessageCodec::new();
         let mut buffer = BytesMut::new();
