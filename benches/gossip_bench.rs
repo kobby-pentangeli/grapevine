@@ -128,6 +128,33 @@ fn payload_types(c: &mut Criterion) {
     group.finish();
 }
 
+fn send_path_serialization(c: &mut Criterion) {
+    let mut group = c.benchmark_group("send_path_serialization");
+
+    let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+    let message = Message::new(addr, 0, Payload::Application(Bytes::from(vec![0u8; 1024])));
+    let config = bincode::config::standard();
+
+    group.bench_function("old_encode_decode_encode", |b| {
+        b.iter(|| {
+            let bytes = bincode::serde::encode_to_vec(black_box(&message), config).unwrap();
+            let (decoded, _): (Message, _) =
+                bincode::serde::decode_from_slice(&bytes, config).unwrap();
+            let reencoded = bincode::serde::encode_to_vec(&decoded, config).unwrap();
+            black_box(reencoded);
+        });
+    });
+
+    group.bench_function("new_single_encode", |b| {
+        b.iter(|| {
+            let bytes = bincode::serde::encode_to_vec(black_box(&message), config).unwrap();
+            black_box(bytes);
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
@@ -137,7 +164,8 @@ criterion_group! {
         message_encoding,
         message_decoding,
         message_creation,
-        payload_types
+        payload_types,
+        send_path_serialization
 }
 
 criterion_main!(benches);

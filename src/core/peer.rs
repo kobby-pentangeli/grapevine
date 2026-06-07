@@ -4,11 +4,12 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::error::TrySendError;
+use tracing::debug;
 
-use crate::{Error, Result};
+use crate::{Error, Message, Result};
 
 /// Age bonus divisor for health score calculation (seconds).
 const AGE_BONUS_DIVISOR: f64 = 300.0;
@@ -178,30 +179,33 @@ impl PeerInfo {
 pub struct Peer {
     /// Peer information
     pub info: PeerInfo,
-
-    /// Channel for sending messages to this peer
-    sender: UnboundedSender<Bytes>,
+    /// Bounded channel to this peer's writer task.
+    sender: Sender<Message>,
 }
 
 impl Peer {
     /// Create a new peer.
-    pub fn new(id: PeerId, sender: UnboundedSender<Bytes>) -> Self {
+    pub fn new(id: PeerId, sender: Sender<Message>) -> Self {
         Self {
             info: PeerInfo::new(id),
             sender,
         }
     }
 
-    /// Send data to this peer.
-    pub fn send(&mut self, data: Bytes) -> Result<()> {
-        match self.sender.send(data) {
+    /// Queue a message for this peer's writer task.
+    pub fn send(&mut self, message: Message) -> Result<()> {
+        match self.sender.try_send(message) {
             Ok(()) => {
                 self.info.increment_sent();
                 Ok(())
             }
-            Err(err) => {
+            Err(TrySendError::Full(_)) => {
+                debug!("Write channel full for {}, dropping message", self.info.id);
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => {
                 self.info.record_failure();
-                Err(Error::Channel(err.to_string()))
+                Err(Error::Channel("peer write channel closed".to_string()))
             }
         }
     }
@@ -219,7 +223,19 @@ impl Peer {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::*;
+    use crate::Payload;
+
+    fn message(seq: u64) -> Message {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        Message::new(
+            addr,
+            seq,
+            Payload::Application(Bytes::from(format!("m{seq}"))),
+        )
+    }
 
     #[test]
     fn update_last_seen_drives_state_machine() {
@@ -258,35 +274,31 @@ mod tests {
     fn peer_send_success() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
         let mut peer = Peer::new(peer_id, tx);
-        let data = Bytes::from("test data");
+        let msg = message(1);
 
         assert_eq!(peer.info.messages_sent, 0);
-        let result = peer.send(data.clone());
-        assert!(result.is_ok());
+        assert!(peer.send(msg.clone()).is_ok());
         assert_eq!(peer.info.messages_sent, 1);
 
-        // Verify data was sent
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-        assert_eq!(received.unwrap(), data);
+        let received = rx.try_recv().expect("message was queued");
+        assert_eq!(received.id, msg.id);
     }
 
     #[test]
     fn peer_send_failure_channel_closed() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Message>(16);
 
         // Drop receiver to close channel
         drop(rx);
 
         let mut peer = Peer::new(peer_id, tx);
-        let data = Bytes::from("test data");
 
-        let result = peer.send(data);
+        let result = peer.send(message(1));
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::Channel(_)));
     }
@@ -295,18 +307,41 @@ mod tests {
     fn peer_multiple_sends() {
         let addr = "127.0.0.1:8000".parse().unwrap();
         let peer_id = PeerId(addr);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
         let mut peer = Peer::new(peer_id, tx);
 
-        for i in 0..5 {
-            let data = Bytes::from(format!("message {i}"));
-            assert!(peer.send(data.clone()).is_ok());
-            assert_eq!(peer.info.messages_sent, i + 1);
+        for i in 1..=5 {
+            assert!(peer.send(message(i)).is_ok());
+            assert_eq!(peer.info.messages_sent, i);
 
             let received = rx.try_recv().unwrap();
-            assert_eq!(received, Bytes::from(format!("message {i}")));
+            assert_eq!(received.id.sequence, i);
         }
+    }
+
+    #[test]
+    fn send_drops_newest_when_channel_full() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let peer_id = PeerId(addr);
+        // Capacity 1, receiver never drains: the second send overflows.
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Message>(1);
+
+        let mut peer = Peer::new(peer_id, tx);
+
+        assert!(peer.send(message(1)).is_ok());
+        assert_eq!(peer.info.messages_sent, 1);
+
+        // Full channel: dropped, still Ok, and not counted as a send.
+        assert!(peer.send(message(2)).is_ok());
+        assert_eq!(
+            peer.info.messages_sent, 1,
+            "a dropped frame is not counted as sent"
+        );
+        assert_eq!(
+            peer.info.consecutive_failures, 0,
+            "backpressure is not a peer failure"
+        );
     }
 
     #[test]

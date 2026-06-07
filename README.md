@@ -135,8 +135,8 @@ Note: QUIC transport support is planned for `v1.1+`
 
 Grapevine implements a push-based gossip protocol with the following components:
 
-- **Epidemic Broadcast**: Probabilistic message forwarding (default 70% probability, max 5 forwards)
-- **Anti-Entropy**: Periodic digest exchange and repair (every 30s) ensures eventual consistency
+- **Epidemic Broadcast**: Probabilistic rumor mongering (blind variant; default 70% forward probability)
+- **Anti-Entropy**: Periodic version-vector reconciliation and repair (every 30s) ensures eventual consistency
 - **Peer Management**: Automatic health monitoring with state machine (Connecting => Connected => Stale => Disconnected)
 - **Rate Limiting**: Per-peer token bucket (100 capacity, 50 tokens/sec) prevents DoS attacks
 - **Message Deduplication**: Time-based eviction (5 minute TTL) prevents duplicates

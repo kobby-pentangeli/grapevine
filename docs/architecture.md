@@ -33,30 +33,32 @@ Grapevine is structured in layers:
 
 ### Transport Layer (`src/transport/`)
 
-- **TcpTransport**: TCP-based transport with connection pooling
-- Note: QUIC transport planned for `v1.1+`
+- **Tcp**: TCP-based transport that owns the authoritative peer registry
+  - Each outbound message is encoded exactly once, by the peer's writer task at the socket
+  - Per-peer write channels are bounded and lossy under backpressure (drop-newest); the shared inbound channel is bounded and applies backpressure to readers
+  - Shutdown stops accepting, flushes queued frames (such as goodbyes), and awaits every connection task instead of sleeping a fixed grace period
+- Note: QUIC transport planned for a later release
 
 ### Protocol Engine (`src/protocol/`)
 
 - **Gossip**: Main protocol engine with background tasks
-- **Epidemic**: Probabilistic broadcast (70% forward probability, max 5 forwards)
-- **Anti-Entropy**: Periodic digest exchange and repair (every 30s)
+- **Epidemic**: Probabilistic broadcast (70% forward probability, blind variant)
+- **Anti-Entropy**: Periodic version-vector reconciliation and repair (every 30s)
 
 ## Message Flow
 
 1. Application calls `node.broadcast(data)`
-2. Protocol creates `Message` with unique ID (origin + sequence + timestamp)
+2. Protocol creates `Message` with a per-origin `(origin, sequence)` ID
 3. Message stored in `seen_messages` cache with metadata
-4. Message serialized via `MessageCodec`
-5. Transport sends to random subset of peers (fan-out)
+4. Transport enqueues the message to a random subset of peers (fan-out)
+5. Each peer's writer task encodes the message once (`MessageCodec`) and writes it to the socket
 6. Receiving nodes:
    - Rate limiting check (token bucket per peer)
    - Deserialize message via `MessageCodec`
    - Check if already seen (deduplication via `MessageId`)
    - Store in `seen_messages` with `MessageEntry` metadata
    - Forward to application handler (if `Application` payload)
-   - Probabilistic forwarding decision (70% probability)
-   - Re-gossip to other peers (if TTL > 1 and forward count < 5)
+   - With probability `forward_probability` (default 70%), re-gossip once to a fanout that excludes the sender and origin (if TTL > 1)
 
 ## Peer Discovery
 

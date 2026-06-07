@@ -31,14 +31,14 @@ Messages are delivered exactly once per node through:
 
 - Unique message identifiers (origin + sequence + timestamp)
 - Per-message deduplication cache with configurable TTL
-- Forward count tracking to prevent re-forwarding loops
+- Deduplication that prevents a node from re-forwarding a rumor it has already seen
 
 ### Bounded Message Propagation
 
 Messages do not propagate indefinitely through:
 
 - TTL mechanism (default: 10 hops)
-- Per-node forward count limits (default: max 5 forwards)
+- A single forward per node on first receipt, gated by `forward_probability`, with deduplication preventing re-forwarding
 - Time-based message eviction (default: 5 minutes)
 
 ### DoS Protection
@@ -75,10 +75,10 @@ During normal operation:
 When a node shuts down gracefully:
 
 1. Sends `Goodbye` messages to all connected peers
-2. Stops accepting new messages
-3. Waits for in-flight messages to complete (timeout: 500ms)
-4. Closes all peer connections
-5. Cleans up resources
+2. Stops the background tasks and the listener (no new connections are accepted)
+3. Stops reading, then drops the peer write channels so writers flush queued frames (the goodbyes) and exit
+4. Awaits the connection tasks, bounded by a short grace so a stuck socket cannot hang shutdown
+5. Clears the deduplication cache
 
 ## Message Types (Payload Variants)
 

@@ -11,7 +11,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
 use tokio::sync::broadcast;
-use tokio::time::{self, sleep};
+use tokio::time;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
@@ -24,9 +24,6 @@ type ListeningAddrs = DashMap<SocketAddr, SocketAddr>;
 
 /// Shutdown broadcast channel capacity.
 const SHUTDOWN_CHANNEL_CAPACITY: usize = 16;
-
-/// Grace period for in-flight messages during shutdown (milliseconds).
-const SHUTDOWN_GRACE_PERIOD_MS: u64 = 500;
 
 /// Peer maintenance check interval (seconds).
 const PEER_MAINTENANCE_INTERVAL_SECS: u64 = 10;
@@ -277,10 +274,10 @@ impl Gossip {
             }
         }
 
-        debug!("Broadcasting shutdown signal");
+        debug!("Stopping background tasks");
         let _ = self.shutdown_tx.send(());
 
-        sleep(Duration::from_millis(SHUTDOWN_GRACE_PERIOD_MS)).await;
+        self.transport.shutdown().await;
 
         debug!("Clearing message cache");
         self.seen_messages.clear();
