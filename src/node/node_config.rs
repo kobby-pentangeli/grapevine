@@ -55,10 +55,6 @@ pub struct NodeConfig {
     /// Rate limiting configuration
     pub rate_limit: RateLimitConfig,
 
-    /// Enable message signing (requires 'crypto' feature)
-    #[cfg(feature = "crypto")]
-    pub enable_signing: bool,
-
     /// Transport protocol
     pub transport: TransportConfig,
 }
@@ -78,8 +74,6 @@ impl Default for NodeConfig {
             anti_entropy: AntiEntropyConfig::default(),
             epidemic: EpidemicConfig::default(),
             rate_limit: RateLimitConfig::default(),
-            #[cfg(feature = "crypto")]
-            enable_signing: false,
             transport: TransportConfig::Tcp,
         }
     }
@@ -148,8 +142,6 @@ struct NodeConfigUnchecked {
     anti_entropy: AntiEntropyConfig,
     epidemic: EpidemicConfig,
     rate_limit: RateLimitConfig,
-    #[cfg(feature = "crypto")]
-    enable_signing: bool,
     transport: TransportConfig,
 }
 
@@ -170,8 +162,6 @@ impl TryFrom<NodeConfigUnchecked> for NodeConfig {
             anti_entropy: raw.anti_entropy,
             epidemic: raw.epidemic,
             rate_limit: raw.rate_limit,
-            #[cfg(feature = "crypto")]
-            enable_signing: raw.enable_signing,
             transport: raw.transport,
         };
         config.validate()?;
@@ -266,13 +256,6 @@ impl NodeConfigBuilder {
     /// Set rate limiting configuration.
     pub fn rate_limit(mut self, config: RateLimitConfig) -> Self {
         self.config.rate_limit = config;
-        self
-    }
-
-    /// Enable message signing.
-    #[cfg(feature = "crypto")]
-    pub fn enable_signing(mut self, enable: bool) -> Self {
-        self.config.enable_signing = enable;
         self
     }
 

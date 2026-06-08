@@ -1,10 +1,8 @@
 //! Peer management types.
 
-use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing::debug;
@@ -26,22 +24,6 @@ const MAX_CONSECUTIVE_PENALTY: f64 = 0.5;
 /// Maximum consecutive failures before peer disconnection.
 const MAX_CONSECUTIVE_FAILURES: u64 = 5;
 
-/// Unique identifier for a peer (currently just its socket address).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PeerId(pub SocketAddr);
-
-impl fmt::Display for PeerId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<SocketAddr> for PeerId {
-    fn from(addr: SocketAddr) -> Self {
-        Self(addr)
-    }
-}
-
 /// State of a peer connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerState {
@@ -55,11 +37,11 @@ pub enum PeerState {
     Disconnected,
 }
 
-/// Information about a peer.
+/// Information about a single live connection.
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
-    /// Peer identifier
-    pub id: PeerId,
+    /// Connection address of the peer
+    pub addr: SocketAddr,
 
     /// Current state
     pub state: PeerState,
@@ -84,11 +66,11 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
-    /// Create new peer info.
-    pub fn new(id: PeerId) -> Self {
+    /// Create new peer info for a connection at `addr`.
+    pub fn new(addr: SocketAddr) -> Self {
         let now = Instant::now();
         Self {
-            id,
+            addr,
             state: PeerState::Connecting,
             last_seen: now,
             connected_at: now,
@@ -184,10 +166,10 @@ pub struct Peer {
 }
 
 impl Peer {
-    /// Create a new peer.
-    pub fn new(id: PeerId, sender: Sender<Message>) -> Self {
+    /// Create a new peer for the connection at `addr`.
+    pub fn new(addr: SocketAddr, sender: Sender<Message>) -> Self {
         Self {
-            info: PeerInfo::new(id),
+            info: PeerInfo::new(addr),
             sender,
         }
     }
@@ -200,7 +182,10 @@ impl Peer {
                 Ok(())
             }
             Err(TrySendError::Full(_)) => {
-                debug!("Write channel full for {}, dropping message", self.info.id);
+                debug!(
+                    "Write channel full for {}, dropping message",
+                    self.info.addr
+                );
                 Ok(())
             }
             Err(TrySendError::Closed(_)) => {
@@ -210,9 +195,9 @@ impl Peer {
         }
     }
 
-    /// Get peer ID.
-    pub fn id(&self) -> PeerId {
-        self.info.id
+    /// Get the peer's connection address.
+    pub fn addr(&self) -> SocketAddr {
+        self.info.addr
     }
 
     /// Get peer state.
@@ -240,7 +225,7 @@ mod tests {
     #[test]
     fn update_last_seen_drives_state_machine() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let mut info = PeerInfo::new(PeerId(addr));
+        let mut info = PeerInfo::new(addr);
         assert_eq!(info.state, PeerState::Connecting);
 
         info.update_last_seen();
@@ -259,7 +244,7 @@ mod tests {
     #[test]
     fn peer_info_saturating_counters() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let mut info = PeerInfo::new(PeerId(addr));
+        let mut info = PeerInfo::new(addr);
 
         info.messages_received = u64::MAX;
         info.increment_received();
@@ -273,10 +258,9 @@ mod tests {
     #[test]
     fn peer_send_success() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
-        let mut peer = Peer::new(peer_id, tx);
+        let mut peer = Peer::new(addr, tx);
         let msg = message(1);
 
         assert_eq!(peer.info.messages_sent, 0);
@@ -290,13 +274,12 @@ mod tests {
     #[test]
     fn peer_send_failure_channel_closed() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
         let (tx, rx) = tokio::sync::mpsc::channel::<Message>(16);
 
         // Drop receiver to close channel
         drop(rx);
 
-        let mut peer = Peer::new(peer_id, tx);
+        let mut peer = Peer::new(addr, tx);
 
         let result = peer.send(message(1));
         assert!(result.is_err());
@@ -306,10 +289,9 @@ mod tests {
     #[test]
     fn peer_multiple_sends() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
-        let mut peer = Peer::new(peer_id, tx);
+        let mut peer = Peer::new(addr, tx);
 
         for i in 1..=5 {
             assert!(peer.send(message(i)).is_ok());
@@ -323,11 +305,10 @@ mod tests {
     #[test]
     fn send_drops_newest_when_channel_full() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
         // Capacity 1, receiver never drains: the second send overflows.
         let (tx, _rx) = tokio::sync::mpsc::channel::<Message>(1);
 
-        let mut peer = Peer::new(peer_id, tx);
+        let mut peer = Peer::new(addr, tx);
 
         assert!(peer.send(message(1)).is_ok());
         assert_eq!(peer.info.messages_sent, 1);
@@ -342,16 +323,5 @@ mod tests {
             peer.info.consecutive_failures, 0,
             "backpressure is not a peer failure"
         );
-    }
-
-    #[test]
-    fn peer_id_serialization() {
-        let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
-
-        let serialized = serde_json::to_string(&peer_id).unwrap();
-        let deserialized: PeerId = serde_json::from_str(&serialized).unwrap();
-
-        assert_eq!(peer_id, deserialized);
     }
 }

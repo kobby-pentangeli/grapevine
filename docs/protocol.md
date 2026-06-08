@@ -16,6 +16,10 @@ This hybrid approach provides:
 
 ## Protocol Guarantees
 
+### Origin Authenticity and Integrity
+
+Every message is Ed25519-signed by its origin and verified on receipt. A node cannot forge a message attributed to an origin whose key a recipient has already pinned, and any tampering with the signed fields is detected and the message dropped. See [Message Authenticity](#message-authenticity) for the full model.
+
 ### Eventual Consistency
 
 All nodes eventually receive all messages, even in the presence of:
@@ -129,6 +133,48 @@ Messages use length-prefixed framing:
 ```
 
 Length is big-endian `u32`.
+
+Inside the bincode payload, every message carries, in addition to its `id`, `ttl`, and `payload`:
+
+- `origin_key`: the originating node's 32-byte Ed25519 public key
+- `signature`: a 64-byte Ed25519 signature over the immutable fields
+
+## Message Authenticity
+
+Each node generates an Ed25519 keypair at startup; its `PeerId` is the public key. Identity is the key, not the socket address.
+
+### Signing
+
+When a node authors a message it signs a domain-separated preimage covering the message's immutable fields only:
+
+```txt
+"grapevine.message.v1" || origin || sequence || payload
+```
+
+The mutable `ttl` and the metadata-only `MessageId::timestamp` are excluded, so a signature survives the TTL decrements that forwarding applies: a rumor is signed once by its origin and verified unchanged at every hop. The origin's public key and the signature are embedded in the message.
+
+### Verification and origin pinning
+
+On receipt, before a message is acted on, the recipient:
+
+1. Verifies the signature against the embedded public key (rejecting unsigned, malformed-key, or tampered messages).
+2. Enforces a trust-on-first-use binding: the first authentic message seen for an origin address pins that address to its key; any later message claiming the same origin under a different key is rejected as a spoofing attempt.
+
+Repaired messages delivered through anti-entropy `MessageResponse`s are each verified the same way before being accepted, so anti-entropy cannot be used to inject forged or tampered messages.
+
+### Threat model
+
+Guaranteed:
+
+- **Integrity** of the origin, sequence, and payload.
+- **Proof of possession**: a valid signature proves the sender holds the private key for the embedded public key.
+- **Origin authenticity** for any origin whose key has already been pinned.
+
+Out of scope for v1.1.0 (do not rely on these):
+
+- **No confidentiality.** Messages are plaintext; confidentiality needs the deferred TLS/QUIC transport.
+- **No first-contact MITM protection.** Pinning is trust-on-first-use; an attacker on the path before a key is pinned can substitute a key for an unseen origin. A PKI or transport authentication closes this and is deferred.
+- **No Sybil resistance.** Keypairs are self-minted; nothing limits how many a peer creates.
 
 ## Message Deduplication
 

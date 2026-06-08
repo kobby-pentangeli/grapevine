@@ -15,8 +15,8 @@ use tokio::time;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    AntiEntropy, EpidemicConfig, Error, Message, MessageEntry, MessageId, NodeConfig, Payload,
-    PeerInfo, PeerState, Result, Tcp,
+    AntiEntropy, EpidemicConfig, Error, Identity, Message, MessageEntry, MessageId, NodeConfig,
+    Payload, PeerId, PeerInfo, PeerState, Result, Tcp, authenticate,
 };
 
 /// Maps a peer's canonical address to its connection address.
@@ -62,6 +62,13 @@ pub struct Gossip {
 
     /// Monotonic per-origin sequence counter for this node's own broadcasts.
     sequence: AtomicU64,
+
+    /// This node's signing identity; every authored message is signed with it.
+    identity: Arc<Identity>,
+
+    /// Trust-on-first-use bindings of origin address to public key, populated by
+    /// [`authenticate`] and shared with the anti-entropy repair path.
+    pins: Arc<DashMap<SocketAddr, PeerId>>,
 }
 
 impl Gossip {
@@ -82,12 +89,14 @@ impl Gossip {
         let transport = Arc::new(transport);
         let seen_messages = Arc::new(DashMap::new());
         let epidemic_config = config.epidemic.clone();
+        let identity = Arc::new(Identity::generate());
 
         let anti_entropy = if config.anti_entropy.enabled {
             Some(Arc::new(AntiEntropy::new(
                 config.anti_entropy.clone(),
                 Arc::clone(&transport),
                 Arc::clone(&seen_messages),
+                Arc::clone(&identity),
             )))
         } else {
             None
@@ -103,7 +112,14 @@ impl Gossip {
             anti_entropy,
             epidemic_config,
             sequence: AtomicU64::new(0),
+            identity,
+            pins: Arc::new(DashMap::new()),
         })
+    }
+
+    /// This node's cryptographic identity (its Ed25519 public key).
+    pub fn peer_id(&self) -> PeerId {
+        self.identity.peer_id()
     }
 
     /// Set the application message handler.
@@ -154,11 +170,15 @@ impl Gossip {
             .ok_or_else(|| Error::internal("No local address"))?;
 
         // Send immediate heartbeat to establish canonical address mapping
-        let heartbeat = Message::new(local_addr, 0, Payload::Heartbeat { from: local_addr });
+        let heartbeat =
+            self.identity
+                .author(local_addr, 0, Payload::Heartbeat { from: local_addr })?;
         transport.send(addr, heartbeat).await?;
 
         // Request peer list
-        let message = Message::new(local_addr, 0, Payload::PeerListRequest);
+        let message = self
+            .identity
+            .author(local_addr, 0, Payload::PeerListRequest)?;
         transport.send(addr, message).await?;
 
         info!("Connected to peer {addr}");
@@ -173,7 +193,9 @@ impl Gossip {
             .ok_or_else(|| Error::internal("No local address"))?;
 
         let sequence = self.sequence.fetch_add(1, AtomicOrdering::Relaxed);
-        let message = Message::new(local_addr, sequence, Payload::Application(data));
+        let message = self
+            .identity
+            .author(local_addr, sequence, Payload::Application(data))?;
 
         self.seen_messages.insert(
             message.id,
@@ -210,14 +232,14 @@ impl Gossip {
             return Err(Error::PeerNotFound(peer));
         }
 
-        let message = Message::new(
+        let message = self.identity.author(
             local_addr,
             0,
             Payload::DirectMessage {
                 recipient: peer,
                 data,
             },
-        );
+        )?;
 
         // Send to the connection address, not the canonical address
         self.transport.send(connection_addr, message).await
@@ -256,21 +278,24 @@ impl Gossip {
 
         let local_addr = self.transport.local_addr();
         if let Some(addr) = local_addr {
-            let goodbye = Message::new(
+            match self.identity.author(
                 addr,
                 0,
                 Payload::Goodbye {
                     reason: "Normal shutdown".to_string(),
                 },
-            );
+            ) {
+                Ok(goodbye) => {
+                    let peer_addrs = self.transport.peers();
+                    debug!("Sending goodbye to {} peers", peer_addrs.len());
 
-            let peer_addrs = self.transport.peers();
-            debug!("Sending goodbye to {} peers", peer_addrs.len());
-
-            for peer_addr in peer_addrs {
-                if let Err(e) = self.transport.send(peer_addr, goodbye.clone()).await {
-                    debug!("Failed to send goodbye to {peer_addr}: {e}");
+                    for peer_addr in peer_addrs {
+                        if let Err(e) = self.transport.send(peer_addr, goodbye.clone()).await {
+                            debug!("Failed to send goodbye to {peer_addr}: {e}");
+                        }
+                    }
                 }
+                Err(e) => warn!("Failed to author goodbye message: {e}"),
             }
         }
 
@@ -293,6 +318,8 @@ impl Gossip {
         let message_handler = self.message_handler.get().cloned();
         let config = self.config.clone();
         let epidemic_config = self.epidemic_config.clone();
+        let identity = Arc::clone(&self.identity);
+        let pins = Arc::clone(&self.pins);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
@@ -314,6 +341,14 @@ impl Gossip {
                         continue;
                     }
                 };
+
+                if let Err(e) = authenticate(&message, &pins) {
+                    warn!(
+                        "Rejecting message from {peer_addr} claiming origin {}: {e}",
+                        message.id.origin
+                    );
+                    continue;
+                }
 
                 let local_addr = match transport.local_addr() {
                     Some(addr) => addr,
@@ -338,8 +373,13 @@ impl Gossip {
                         trace!("Heartbeat from {from}");
                     }
                     Payload::PeerListRequest => {
-                        Self::handle_peer_list_request(&transport, &canonical_addrs, peer_addr)
-                            .await;
+                        Self::handle_peer_list_request(
+                            &transport,
+                            &canonical_addrs,
+                            &identity,
+                            peer_addr,
+                        )
+                        .await;
                     }
                     Payload::PeerListResponse { peers: peer_list } => {
                         Self::handle_peer_list_response(
@@ -357,6 +397,7 @@ impl Gossip {
                             version_vector.clone(),
                             &transport,
                             &seen_messages,
+                            &identity,
                         )
                         .await;
                     }
@@ -367,6 +408,7 @@ impl Gossip {
                             version_vector.clone(),
                             &transport,
                             &seen_messages,
+                            &identity,
                         )
                         .await;
                     }
@@ -374,6 +416,7 @@ impl Gossip {
                         AntiEntropy::handle_message_response(
                             msgs.clone(),
                             &seen_messages,
+                            &pins,
                             &message_handler,
                         );
                     }
@@ -438,6 +481,7 @@ impl Gossip {
     fn spawn_gossip_loop(&self) {
         let interval = self.config.gossip_interval;
         let transport = Arc::clone(&self.transport);
+        let identity = Arc::clone(&self.identity);
         let mut shutdown_rx = self.shutdown_tx.subscribe();
 
         tokio::spawn(async move {
@@ -454,7 +498,13 @@ impl Gossip {
                             None => continue,
                         };
 
-                        let heartbeat = Message::new(local_addr, 0, Payload::Heartbeat { from: local_addr });
+                        let heartbeat = match identity.author(local_addr, 0, Payload::Heartbeat { from: local_addr }) {
+                            Ok(message) => message,
+                            Err(e) => {
+                                warn!("Failed to author heartbeat: {e}");
+                                continue;
+                            }
+                        };
                         let peer_addrs = transport.peers();
 
                         for peer_addr in peer_addrs {
@@ -593,6 +643,7 @@ impl Gossip {
     async fn handle_peer_list_request(
         transport: &Arc<Tcp>,
         canonical_addrs: &ListeningAddrs,
+        identity: &Identity,
         sender: SocketAddr,
     ) {
         let Some(local_addr) = transport.local_addr() else {
@@ -600,7 +651,13 @@ impl Gossip {
         };
 
         let peers = known_canonical_peers(transport, canonical_addrs);
-        let response = Message::new(local_addr, 0, Payload::PeerListResponse { peers });
+        let response = match identity.author(local_addr, 0, Payload::PeerListResponse { peers }) {
+            Ok(message) => message,
+            Err(e) => {
+                warn!("Failed to author peer list response: {e}");
+                return;
+            }
+        };
         if let Err(e) = transport.send(sender, response).await {
             warn!("Failed to send peer list to {sender}: {e}");
         }
@@ -711,10 +768,9 @@ fn plan_maintenance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PeerId;
 
     fn connected_peer(addr: SocketAddr) -> PeerInfo {
-        let mut info = PeerInfo::new(PeerId(addr));
+        let mut info = PeerInfo::new(addr);
         info.state = PeerState::Connected;
         info
     }

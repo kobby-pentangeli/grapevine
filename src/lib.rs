@@ -7,6 +7,8 @@
 //! # Features
 //!
 //! - **Async/await**: Built on Tokio for efficient asynchronous I/O
+//! - **Authenticated messages**: Every message is Ed25519-signed by its origin
+//!   and verified on receipt (see [`core::identity`] for the threat model)
 //! - **Flexible transport**: TCP by default, QUIC [scheduled for v1.1+]
 //! - **Configurable**: Extensive configuration options
 //!
@@ -43,8 +45,8 @@ pub mod protocol;
 pub mod transport;
 
 pub use core::{
-    Message, MessageCodec, MessageId, Payload, Peer, PeerId, PeerInfo, PeerState, RateLimitConfig,
-    RateLimiter,
+    Identity, Message, MessageCodec, MessageId, Payload, Peer, PeerId, PeerInfo, PeerState,
+    RateLimitConfig, RateLimiter, Signature, authenticate, verify_message,
 };
 
 pub use error::Error;

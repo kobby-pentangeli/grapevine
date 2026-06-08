@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+use crate::core::identity::{PeerId, Signature};
+
 /// Unique identifier for a message: the originating node plus that node's
 /// monotonic per-origin sequence number.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -76,31 +78,31 @@ pub struct Message {
     /// Message payload
     pub payload: Payload,
 
-    /// Signature (if crypto feature enabled)
-    #[cfg(feature = "crypto")]
-    pub signature: Option<Vec<u8>>,
+    /// The originating node's Ed25519 public key, signed over and verified
+    /// against on receipt.
+    pub origin_key: PeerId,
+
+    /// Ed25519 signature over the domain-separated `(origin, sequence, payload)`.
+    pub signature: Signature,
 }
 
 impl Message {
-    /// Create a new gossip message originated by `origin` at `sequence`.
+    /// Default time-to-live (hop count) assigned to a newly authored message.
+    pub const DEFAULT_TTL: u8 = 10;
+
+    /// Create an **unsigned** gossip message originated by `origin` at `sequence`.
     pub fn new(origin: SocketAddr, sequence: u64, payload: Payload) -> Self {
-        Self {
-            id: MessageId::new(origin, sequence),
-            ttl: 10, // Default TTL
-            payload,
-            #[cfg(feature = "crypto")]
-            signature: None,
-        }
+        Self::with_ttl(origin, sequence, payload, Self::DEFAULT_TTL)
     }
 
-    /// Create with custom TTL.
+    /// Create an **unsigned** message with a custom TTL.
     pub fn with_ttl(origin: SocketAddr, sequence: u64, payload: Payload, ttl: u8) -> Self {
         Self {
             id: MessageId::new(origin, sequence),
             ttl,
             payload,
-            #[cfg(feature = "crypto")]
-            signature: None,
+            origin_key: PeerId::UNSIGNED,
+            signature: Signature::UNSIGNED,
         }
     }
 

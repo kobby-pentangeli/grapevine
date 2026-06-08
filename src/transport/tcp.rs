@@ -15,7 +15,7 @@ use tokio_util::codec::{FramedRead, FramedWrite};
 use tracing::{debug, error, warn};
 
 use crate::core::message_codec::MAX_FRAME_SIZE;
-use crate::{Error, Message, MessageCodec, Peer, PeerId, PeerInfo, RateLimiter, Result};
+use crate::{Error, Message, MessageCodec, Peer, PeerInfo, RateLimiter, Result};
 
 const WRITE_CHANNEL_CAPACITY: usize = 1024;
 const RECV_CHANNEL_CAPACITY: usize = 1024;
@@ -301,7 +301,7 @@ impl Tcp {
         let (reader, writer) = stream.into_split();
         let (tx, mut rx) = mpsc::channel::<Message>(WRITE_CHANNEL_CAPACITY);
 
-        peers.insert(peer_addr, Peer::new(PeerId(peer_addr), tx));
+        peers.insert(peer_addr, Peer::new(peer_addr, tx));
 
         let codec = MessageCodec::with_max_frame_size(max_message_size);
 

@@ -9,7 +9,7 @@ use bytes::Bytes;
 pub use node_config::{NodeConfig, NodeConfigBuilder};
 use tracing::trace;
 
-use crate::{Gossip, Result};
+use crate::{Gossip, PeerId, Result};
 
 /// A Grapevine gossip node.
 ///
@@ -126,6 +126,11 @@ impl Node {
     /// Get the node's local address.
     pub async fn local_addr(&self) -> Option<SocketAddr> {
         self.protocol.local_addr().await
+    }
+
+    /// Get the node's cryptographic identity (its Ed25519 public key).
+    pub fn peer_id(&self) -> PeerId {
+        self.protocol.peer_id()
     }
 
     /// Get connected peer addresses.

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time;
 use tracing::{debug, trace, warn};
 
-use crate::{Message, MessageId, Payload, Result, Tcp};
+use crate::{Identity, Message, MessageId, Payload, PeerId, Result, Tcp, authenticate};
 
 /// Space, in bytes, withheld from the frame budget so that bincode's
 /// variable-length count prefix can grow as a chunk fills without pushing the
@@ -59,6 +59,7 @@ pub struct AntiEntropy {
     config: AntiEntropyConfig,
     transport: Arc<Tcp>,
     seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
+    identity: Arc<Identity>,
 }
 
 impl AntiEntropy {
@@ -67,11 +68,13 @@ impl AntiEntropy {
         config: AntiEntropyConfig,
         transport: Arc<Tcp>,
         seen_messages: Arc<DashMap<MessageId, MessageEntry>>,
+        identity: Arc<Identity>,
     ) -> Self {
         Self {
             config,
             transport,
             seen_messages,
+            identity,
         }
     }
 
@@ -85,6 +88,7 @@ impl AntiEntropy {
         let config = self.config.clone();
         let transport = Arc::clone(&self.transport);
         let seen_messages = Arc::clone(&self.seen_messages);
+        let identity = Arc::clone(&self.identity);
 
         tokio::spawn(async move {
             let mut ticker = time::interval(config.interval);
@@ -116,13 +120,19 @@ impl AntiEntropy {
                 );
 
                 for peer_addr in selected_peers {
-                    let digest_msg = Message::new(
+                    let digest_msg = match identity.author(
                         local_addr,
                         0,
                         Payload::AntiEntropyDigest {
                             version_vector: version_vector.clone(),
                         },
-                    );
+                    ) {
+                        Ok(message) => message,
+                        Err(e) => {
+                            warn!("Failed to author anti-entropy digest: {e}");
+                            continue;
+                        }
+                    };
 
                     if let Err(e) = transport.send(peer_addr, digest_msg).await {
                         debug!("Failed to send anti-entropy digest to {peer_addr}: {e}");
@@ -141,6 +151,7 @@ impl AntiEntropy {
         remote_version_vec: Vec<(SocketAddr, u64)>,
         transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
+        identity: &Identity,
     ) -> Result<()> {
         let remote = remote_version_vec
             .into_iter()
@@ -149,16 +160,16 @@ impl AntiEntropy {
         let to_send = messages_for_peer(seen_messages, &remote);
         if !to_send.is_empty() {
             debug!("Pushing {} messages to {}", to_send.len(), peer_addr);
-            Self::send_message_responses(local_addr, peer_addr, to_send, transport).await;
+            Self::send_message_responses(local_addr, peer_addr, to_send, transport, identity).await;
         }
 
-        let request = Message::new(
+        let request = identity.author(
             local_addr,
             0,
             Payload::MessageRequest {
                 version_vector: build_version_vector(seen_messages),
             },
-        );
+        )?;
         if let Err(e) = transport.send(peer_addr, request).await {
             warn!("Failed to send message request to {peer_addr}: {e}");
         }
@@ -174,6 +185,7 @@ impl AntiEntropy {
         remote_version_vec: Vec<(SocketAddr, u64)>,
         transport: &Arc<Tcp>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
+        identity: &Identity,
     ) -> Result<()> {
         let remote: HashMap<SocketAddr, u64> = remote_version_vec.into_iter().collect();
 
@@ -184,7 +196,7 @@ impl AntiEntropy {
                 to_send.len(),
                 peer_addr
             );
-            Self::send_message_responses(local_addr, peer_addr, to_send, transport).await;
+            Self::send_message_responses(local_addr, peer_addr, to_send, transport, identity).await;
         }
 
         Ok(())
@@ -196,12 +208,18 @@ impl AntiEntropy {
         peer_addr: SocketAddr,
         messages: Vec<Message>,
         transport: &Arc<Tcp>,
+        identity: &Identity,
     ) {
-        for response in chunk_message_responses(local_addr, messages, transport.max_message_size())
+        match chunk_message_responses(identity, local_addr, messages, transport.max_message_size())
         {
-            if let Err(e) = transport.send(peer_addr, response).await {
-                warn!("Failed to send message response to {peer_addr}: {e}");
+            Ok(responses) => {
+                for response in responses {
+                    if let Err(e) = transport.send(peer_addr, response).await {
+                        warn!("Failed to send message response to {peer_addr}: {e}");
+                    }
+                }
             }
+            Err(e) => warn!("Failed to author message responses for {peer_addr}: {e}"),
         }
     }
 
@@ -209,6 +227,7 @@ impl AntiEntropy {
     pub fn handle_message_response(
         messages: Vec<Message>,
         seen_messages: &DashMap<MessageId, MessageEntry>,
+        pins: &DashMap<SocketAddr, PeerId>,
         message_handler: &Option<Arc<dyn Fn(SocketAddr, bytes::Bytes) + Send + Sync>>,
     ) {
         debug!(
@@ -217,6 +236,14 @@ impl AntiEntropy {
         );
 
         for message in messages {
+            if let Err(e) = authenticate(&message, pins) {
+                warn!(
+                    "Dropping unauthenticated repaired message claiming origin {}: {e}",
+                    message.id.origin
+                );
+                continue;
+            }
+
             if seen_messages.contains_key(&message.id) {
                 continue;
             }
@@ -286,13 +313,23 @@ fn messages_for_peer(
         .collect()
 }
 
-/// Split repaired `messages` into one or more `MessageResponse`s, each of which
-/// serializes within `max_frame_size`.
+/// Split repaired `messages` into one or more signed `MessageResponse`s, each of
+/// which serializes within `max_frame_size`.
+///
+/// The signed and unsigned envelopes serialize to the same length (the
+/// public-key and signature fields are fixed-width), so the empty unsigned
+/// envelope is used to measure the per-frame budget while the emitted frames are
+/// authored and signed by `identity`.
+///
+/// # Errors
+/// Returns [`Error::Serialization`](crate::Error::Serialization) if a response
+/// envelope cannot be authored.
 fn chunk_message_responses(
+    identity: &Identity,
     local_addr: SocketAddr,
     messages: Vec<Message>,
     max_frame_size: usize,
-) -> Vec<Message> {
+) -> Result<Vec<Message>> {
     let encoded_len = |message: &Message| {
         bincode::serde::encode_to_vec(message, bincode::config::standard())
             .ok()
@@ -307,16 +344,13 @@ fn chunk_message_responses(
         },
     );
     let Some(envelope_len) = encoded_len(&envelope) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let budget = max_frame_size
         .saturating_sub(envelope_len)
         .saturating_sub(CHUNK_LENGTH_PREFIX_RESERVE);
 
-    let wrap =
-        |messages: Vec<Message>| Message::new(local_addr, 0, Payload::MessageResponse { messages });
-
-    let mut responses = Vec::new();
+    let mut batches: Vec<Vec<Message>> = Vec::new();
     let mut batch: Vec<Message> = Vec::new();
     let mut batch_len = 0usize;
 
@@ -332,7 +366,7 @@ fn chunk_message_responses(
             continue;
         }
         if !batch.is_empty() && batch_len.saturating_add(len) > budget {
-            responses.push(wrap(std::mem::take(&mut batch)));
+            batches.push(std::mem::take(&mut batch));
             batch_len = 0;
         }
         batch_len = batch_len.saturating_add(len);
@@ -340,10 +374,13 @@ fn chunk_message_responses(
     }
 
     if !batch.is_empty() {
-        responses.push(wrap(batch));
+        batches.push(batch);
     }
 
-    responses
+    batches
+        .into_iter()
+        .map(|messages| identity.author(local_addr, 0, Payload::MessageResponse { messages }))
+        .collect()
 }
 
 #[cfg(test)]
@@ -454,7 +491,9 @@ mod tests {
         let total = messages.len();
         let max_frame_size = 2048;
 
-        let responses = chunk_message_responses(local, messages, max_frame_size);
+        let identity = Identity::generate();
+        let responses =
+            chunk_message_responses(&identity, local, messages, max_frame_size).unwrap();
 
         assert!(responses.len() > 1, "an over-budget batch must split");
         let mut carried = 0;
@@ -478,7 +517,10 @@ mod tests {
         let small = app_message(origin, 1, 100);
         let oversized = app_message(origin, 2, 4096);
 
-        let responses = chunk_message_responses(local, vec![small.clone(), oversized], 2048);
+        let identity = Identity::generate();
+        let responses =
+            chunk_message_responses(&identity, local, vec![small.clone(), oversized], 2048)
+                .unwrap();
 
         let carried = responses
             .iter()
@@ -500,7 +542,9 @@ mod tests {
         let origin = addr(2);
         let messages = vec![app_message(origin, 1, 64), app_message(origin, 2, 64)];
 
-        let responses = chunk_message_responses(local, messages, MAX_FRAME_SIZE);
+        let identity = Identity::generate();
+        let responses =
+            chunk_message_responses(&identity, local, messages, MAX_FRAME_SIZE).unwrap();
         assert_eq!(responses.len(), 1, "a small batch needs a single frame");
     }
 }

@@ -24,11 +24,12 @@ Grapevine is structured in layers:
 
 ### Core Types (`src/core/`)
 
-- **Message**: Gossip message structure with ID, TTL, and payload variants
-- **MessageCodec**: Length-prefixed framing and bincode serialization
-  - Message size limit: 10MB default (configurable)
+- **Message**: Gossip message structure with ID, TTL, payload, and the origin's public key plus signature
+- **MessageCodec**: Length-prefixed framing and bincode serialization. Message size limit: 10MB default (configurable)
+- **Identity**: Per-node Ed25519 keypair; signs authored messages and exposes the node's `PeerId`
+- **PeerId**: Cryptographic node identity (the Ed25519 public key)
 - **Peer**: Represents a connected peer with health tracking
-- **PeerInfo**: Peer metadata with health score, failure tracking, state machine
+- **PeerInfo**: Per-connection metadata with health score, failure tracking, state machine
 - **RateLimiter**: Per-peer token bucket rate limiting (100 capacity, 50 tokens/sec)
 
 ### Transport Layer (`src/transport/`)
@@ -48,17 +49,18 @@ Grapevine is structured in layers:
 ## Message Flow
 
 1. Application calls `node.broadcast(data)`
-2. Protocol creates `Message` with a per-origin `(origin, sequence)` ID
+2. Protocol authors a `Message` with a per-origin `(origin, sequence)` ID and signs it with the node's `Identity`
 3. Message stored in `seen_messages` cache with metadata
 4. Transport enqueues the message to a random subset of peers (fan-out)
 5. Each peer's writer task encodes the message once (`MessageCodec`) and writes it to the socket
 6. Receiving nodes:
    - Rate limiting check (token bucket per peer)
    - Deserialize message via `MessageCodec`
+   - Authenticate: verify the origin's signature and enforce the trust-on-first-use origin/key binding (reject on failure)
    - Check if already seen (deduplication via `MessageId`)
    - Store in `seen_messages` with `MessageEntry` metadata
    - Forward to application handler (if `Application` payload)
-   - With probability `forward_probability` (default 70%), re-gossip once to a fanout that excludes the sender and origin (if TTL > 1)
+   - With probability `forward_probability` (default 70%), re-gossip once (unchanged signature) to a fanout that excludes the sender and origin (if TTL > 1)
 
 ## Peer Discovery
 
