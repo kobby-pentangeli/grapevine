@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["peer-to-peer", "gossip", "async"]
 categories = ["network-programming"]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [dependencies]
 # Async

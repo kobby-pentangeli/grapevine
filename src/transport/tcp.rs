@@ -329,13 +329,11 @@ impl Tcp {
                                 peer.info.increment_received();
                             }
 
-                            if let Some(ref limiter) = rate_limiter {
-                                if !limiter.lock().await.allow_request(peer_addr) {
-                                    warn!(
-                                        "Rate limit exceeded for peer {peer_addr}, dropping message"
-                                    );
-                                    continue;
-                                }
+                            if let Some(ref limiter) = rate_limiter
+                                && !limiter.lock().await.allow_request(peer_addr)
+                            {
+                                warn!("Rate limit exceeded for peer {peer_addr}, dropping message");
+                                continue;
                             }
 
                             if message_tx.send((peer_addr, message)).await.is_err() {
