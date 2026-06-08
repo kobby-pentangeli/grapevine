@@ -4,41 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-06-08
 
-Draft notes for the upcoming `1.1.0` correctness-and-hardening release. This section is finalized (renamed, dated, with verified test counts) before the version bump.
+A correctness-and-hardening release. The naive `1.0.0` push-gossip implementation is repaired in place---anti-entropy actually reconciles, the peer registry is real and bounds are enforced, epidemic forwarding matches the protocol spec, the transport serializes once and shuts down deterministically---and cryptographic message authenticity is promoted to an always-on, first-class capability. Several changes are breaking, including the wire format, so `1.1.0` nodes do not interoperate with `1.0.0` nodes. The test suite is now event-driven across all platforms.
 
 ### Added
 
 - `Tcp::set_max_peers`, `Tcp::peer_infos`, `Tcp::mark_stale`, and `Tcp::disconnect`, exposing the transport's authoritative peer registry so membership policy is driven from a single source of truth.
 - `Tcp::max_message_size`, exposing the negotiated frame limit so anti-entropy repair can chunk its responses to stay within it.
 - `Tcp::shutdown`, which stops the listener and tears down every connection task deterministically.
-- Cryptographic message authenticity (always on): an `Identity` type holding a per-node Ed25519 keypair, a `Signature` type, and the free functions `verify_message` and `authenticate`. Each node signs every message it originates over a domain-separated encoding of `(origin, sequence, payload)`; recipients verify and pin each origin address to the key it first presented (trust-on-first-use). See `docs/protocol.md` and the `core::identity` module docs for the threat model.
+- Cryptographic message authenticity: an `Identity` type holding a per-node Ed25519 keypair, a `Signature` type, and the free functions `verify_message` and `authenticate`. Each node signs every message it originates over a domain-separated encoding of `(origin, sequence, payload)`; recipients verify and pin each origin address to the key it first presented (trust-on-first-use). See `docs/protocol.md` and the `core::identity` module docs for the threat model.
 - `Node::peer_id` and `Gossip::peer_id`, exposing the node's cryptographic identity (its Ed25519 public key).
 - `Error::OriginKeyMismatch`, returned when a message claims an origin already pinned to a different key.
+- The CLI now loads a local `.env` file at startup (via `dotenvy`), fixing a gap that was documented but never implemented: "automatically reads `.env`"; variables already set in the process environment still take precedence.
+- Dissemination benchmarks measuring end-to-end propagation latency versus network size and versus fanout, complementing the existing codec and serialization microbenchmarks.
+- An end-to-end rate-limiting test that exercises real throttling---a tight token bucket drops the bulk of a burst--—where the previous test only asserted the node started.
 
 ### Changed
 
 - The TCP transport now owns the single authoritative peer registry; the gossip engine's never-populated second peer map was removed. Every received frame refreshes the sender's liveness and drives the `Connecting -> Connected -> Stale -> Disconnected` state machine, so staleness, health scoring, and peer maintenance operate on real data instead of an empty map.
 - Peer-list discovery advertises and dials canonical (listening) addresses instead of ephemeral connection ports, and skips both ourselves and peers we are already connected to in either direction, so transitive discovery works without opening duplicate connections.
-- `Tcp::connect` registers the peer synchronously and returns immediately — the prior busy-poll registration wait was removed — and now refuses self-connections and connections beyond `max_peers`.
-- **Breaking:** rate-limiter construction is now fallible — `RateLimiter::new`/`with_params` are replaced by `RateLimiter::try_new`/`try_with_params`, which return `Result` instead of panicking on invalid parameters.
+- `Tcp::connect` registers the peer synchronously and returns immediately---the prior busy-poll registration wait was removed---and now refuses self-connections and connections beyond `max_peers`.
+- **Breaking:** rate-limiter construction is now fallible---`RateLimiter::new`/`with_params` are replaced by `RateLimiter::try_new`/`try_with_params`, which return `Result` instead of panicking on invalid parameters.
 - **Breaking:** `Tcp::set_rate_limit` and `Gossip::new` now return `Result` rather than constructing infallibly.
 - **Breaking:** `NodeConfig` is validated on deserialization, so an out-of-range configuration can no longer be produced by `serde`; validation logic is centralized in `NodeConfig::validate`.
 - **Breaking (format):** all `Duration` configuration fields now serialize uniformly via serde's default representation; the seconds-only encoding previously applied to `AntiEntropyConfig::interval` is gone, so serialized configs from `1.0.0` that used the bare-seconds form no longer round-trip.
 - Collapsed the `RwLock<Tcp>` and `RwLock<Gossip>` nesting to lock-free `Arc` sharing with interior-mutable state, removing the read guard the receive loop previously held across `recv().await`.
 - **Breaking:** `Message::new` and `Message::with_ttl` take an explicit per-origin `sequence` argument; the process-global sequence counter is gone, so `(origin, sequence)` is now a true per-origin monotonic identifier (and the basis for the version-vector reconciliation above). The node's own broadcast counter lives in the gossip engine and is drawn only for broadcasts, keeping each origin's reconciled stream dense.
 - **Breaking:** `MessageId` equality and hashing now key on `(origin, sequence)` only; `timestamp` is kept as metadata but no longer participates in identity, decoupling a message's identity from the wall clock.
-- **Breaking (format):** the anti-entropy wire format changed — `Payload::AntiEntropyDigest` and `Payload::MessageRequest` now carry a per-origin version vector (`Vec<(SocketAddr, u64)>`) instead of a `Vec<MessageId>`, so `1.1.0` nodes do not reconcile with `1.0.0` nodes.
-- Epidemic forwarding is now a coherent per-rumor blind variant (Demers §1.3): a newly learned rumor is forwarded once, gated by `forward_probability`, to a fanout that excludes the immediate sender and the origin so a message is never echoed straight back. The previous per-receive coin and the never-incremented forward-count cap are gone; TTL and deduplication bound propagation.
+- **Breaking (format):** the anti-entropy wire format changed---`Payload::AntiEntropyDigest` and `Payload::MessageRequest` now carry a per-origin version vector (`Vec<(SocketAddr, u64)>`) instead of a `Vec<MessageId>`, so `1.1.0` nodes do not reconcile with `1.0.0` nodes.
+- Epidemic forwarding is now a coherent per-rumor blind variant: a newly learned rumor is forwarded once, gated by `forward_probability`, to a fanout that excludes the immediate sender and the origin so a message is never echoed straight back. The previous per-receive coin and the never-incremented forward-count cap are gone; TTL and deduplication bound propagation.
 - Direct messages are no longer entered into the seen-message cache: being unicast and single-hop they are delivered on receipt and excluded from anti-entropy, which keeps each origin's broadcast sequence dense and stops direct-message content from leaking to non-recipients through the digest exchange.
 - The send path now serializes each message exactly once, at the socket: the per-peer channel carries the `Message` and the writer task encodes it, removing the prior encode-in-`send` plus decode-in-writer round trip (three serializations per send reduced to one).
 - The per-peer write channels and the shared inbound channel are now bounded rather than unbounded, closing a memory-exhaustion vector under load. A full write channel drops the newest frame (gossip is lossy and recovered by epidemic broadcast and anti-entropy); a full inbound channel applies backpressure to the connection readers.
-- Shutdown is now real: the listener and per-connection tasks are signalled and awaited — queued goodbyes are flushed first — instead of the node sleeping a fixed 500 ms while the accept loop kept running. Peer eviction (`Tcp::disconnect`) now aborts the connection's lingering reader, which Phase 3 had left detached.
+- Shutdown is now real: the listener and per-connection tasks are signalled and awaited---queued goodbyes are flushed first---instead of the node sleeping a fixed 500 ms while the accept loop kept running. Peer eviction (`Tcp::disconnect`) now aborts the connection's lingering reader, which had been left detached.
 - **Breaking:** `PeerId` is now a node's Ed25519 public key (`PeerId([u8; 32])`) rather than its socket address; `From<SocketAddr> for PeerId` is gone, and `PeerId::Display` renders a hex key prefix. Origin-spoofing is therefore detectable: identity is the key, not the address.
-- **Breaking:** `PeerInfo` now describes a connection by address — its `id: PeerId` field is replaced by `addr: SocketAddr`, `PeerInfo::new` and `Peer::new` take a `SocketAddr`, and `Peer::id()` is renamed `Peer::addr()`.
+- **Breaking:** `PeerInfo` now describes a connection by address---its `id: PeerId` field is replaced by `addr: SocketAddr`, `PeerInfo::new` and `Peer::new` take a `SocketAddr`, and `Peer::id()` is renamed `Peer::addr()`.
 - **Breaking (format):** every `Message` now carries the origin's `origin_key` (Ed25519 public key) and a `signature`; the wire format changed, so `1.1.0` nodes do not interoperate with `1.0.0` nodes. Unsigned messages (those built by `Message::new`/`with_ttl`, which now exist only for tests and framing) are rejected on receipt.
 - Anti-entropy now signs the digests, requests, and repair responses it sends, and independently authenticates every repaired message it receives, so the repair path cannot be used to inject forged or tampered messages.
+- Integration tests now wait on real conditions (a connection forming, a message delivered, delivery quiescing) with bounded deadlines instead of fixed `sleep`s. This removes the timing flakiness that had kept Windows out of the test matrix; the suite is faster and deterministic, and Windows now runs the full tests in CI.
+- CI hardening: the test job runs `--all-targets --locked`; an MSRV check pinned to `rust-version` (1.85), a least-privilege top-level `permissions:` block, a `concurrency:` group that cancels superseded runs, and a single "CI success" gate job were added; the separate Windows build job folded back into the test matrix. The security workflow replaces its hand-rolled `cargo-audit` install with the maintained `rustsec/audit-check` action, and the commented-out `cargo-deny` stub was removed.
+- `#![warn(missing_docs)]` was dropped in favour of documenting where it helps the reader; pure signature-restating doc comments were trimmed while the public-API and invariant documentation was kept.
+- Refreshed `Cargo.lock` to the latest within-semver dependency versions.
+
+### Security
+
+- `cargo audit` reports `bincode` 2.x as unmaintained (RUSTSEC-2025-0141). This is an informational advisory, not a vulnerability; `bincode` is the wire serializer, so migrating off it is a breaking wire-format change deferred to a later release. The advisory is acknowledged in `.cargo/audit.toml` and the CI audit job so a genuine future vulnerability (a different advisory ID) is not masked.
 
 ### Removed
 
@@ -229,5 +240,6 @@ node.broadcast(Bytes::from("Hello!")).await?;
 
 Previous development version before v1.0.0 rewrite.
 
+[1.1.0]: https://github.com/kobby-pentangeli/grapevine/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/kobby-pentangeli/grapevine/compare/v0.1.3...v1.0.0
 [0.1.3]: https://github.com/kobby-pentangeli/grapevine/releases/tag/v0.1.3

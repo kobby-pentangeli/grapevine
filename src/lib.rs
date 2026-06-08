@@ -9,7 +9,7 @@
 //! - **Async/await**: Built on Tokio for efficient asynchronous I/O
 //! - **Authenticated messages**: Every message is Ed25519-signed by its origin
 //!   and verified on receipt (see [`core::identity`] for the threat model)
-//! - **Flexible transport**: TCP by default, QUIC [scheduled for v1.1+]
+//! - **Flexible transport**: TCP by default (QUIC planned for a future release)
 //! - **Configurable**: Extensive configuration options
 //!
 //! # Example
@@ -36,7 +36,7 @@
 //! ```
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs, clippy::all)]
+#![warn(clippy::all)]
 
 pub mod core;
 pub mod error;

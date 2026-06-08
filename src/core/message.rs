@@ -72,7 +72,7 @@ pub struct Message {
     /// Unique message identifier
     pub id: MessageId,
 
-    /// Time-to-live (hop count)
+    /// Time-to-live: the remaining hop budget, decremented at each forward.
     pub ttl: u8,
 
     /// Message payload

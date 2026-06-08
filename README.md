@@ -31,7 +31,7 @@ Or add manually to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-grapevine = "1.0"
+grapevine = "1.1"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 ```
@@ -130,7 +130,7 @@ let config = NodeConfigBuilder::new()
 
 Each node holds an Ed25519 keypair (its `PeerId` is the public key), signs every message it originates over a domain-separated encoding of the immutable `(origin, sequence, payload)`, and embeds the public key. Recipients verify the signature and pin each origin address to the key it first presented (trust-on-first-use), so a peer cannot forge a message attributed to a pinned origin. This provides integrity and origin authenticity but **not** confidentiality; see [`docs/protocol.md`](docs/protocol.md#message-authenticity) for the full threat model.
 
-Note: QUIC transport and TLS (for confidentiality) are planned for `v1.1+`.
+Note: QUIC transport and TLS (for confidentiality) are planned for a future release.
 
 ## Architecture
 

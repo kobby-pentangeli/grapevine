@@ -169,6 +169,11 @@ fn display_prompt(local_addr: SocketAddr) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load a local `.env` if present so its keys populate the process
+    // environment that clap reads below; real environment variables already set
+    // take precedence, so a missing file is fine.
+    dotenvy::dotenv().ok();
+
     let args = Args::parse();
 
     // Initialize tracing
