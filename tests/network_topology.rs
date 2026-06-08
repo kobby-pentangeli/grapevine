@@ -8,18 +8,33 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
-use common::init_tracing;
-use grapevine::{Node, NodeConfig, NodeConfigBuilder};
+use common::{READY_TIMEOUT, init_tracing, wait_for_peers, wait_until};
+use grapevine::{AntiEntropyConfig, Node, NodeConfig, NodeConfigBuilder};
+
+/// Frequent reconciliation so a message dropped by epidemic push (probabilistic
+/// forwarding, or a write channel shedding load under a burst) is repaired
+/// within the test window rather than at the 30s default interval.
+fn brisk_anti_entropy() -> AntiEntropyConfig {
+    AntiEntropyConfig {
+        interval: Duration::from_millis(500),
+        fanout: 3,
+        enabled: true,
+    }
+}
 
 /// Test five-node mesh with multiple concurrent broadcasts.
 #[tokio::test(flavor = "multi_thread")]
 async fn five_node_mesh_broadcast() {
     init_tracing();
 
-    // Create node1 (seed)
-    let node1 = Node::new(NodeConfig::default())
-        .await
-        .expect("Failed to create node1");
+    let node1 = Node::new(
+        NodeConfigBuilder::new()
+            .anti_entropy(brisk_anti_entropy())
+            .build()
+            .expect("Failed to build node1 config"),
+    )
+    .await
+    .expect("Failed to create node1");
 
     let received1 = Arc::new(AtomicU32::new(0));
     let received1_clone = Arc::clone(&received1);
@@ -32,23 +47,21 @@ async fn five_node_mesh_broadcast() {
     node1.start().await.expect("Failed to start node1");
     let addr1 = node1.local_addr().await.expect("No local address");
 
-    // Create 4 additional nodes, connecting to node1 and previous node for better mesh topology
     let mut nodes = vec![node1];
     let mut counters = vec![received1];
     let mut addresses = vec![addr1];
 
     for i in 2..=5 {
-        let mut config_builder = NodeConfigBuilder::new().add_bootstrap_peer(addr1);
+        let mut config_builder = NodeConfigBuilder::new()
+            .add_bootstrap_peer(addr1)
+            .anti_entropy(brisk_anti_entropy())
+            .fanout(3);
 
-        // Also connect to the previous node to create a better mesh topology
         if i > 2 {
             config_builder = config_builder.add_bootstrap_peer(addresses[i - 3]);
         }
 
-        let config = config_builder
-            .fanout(3) // Higher fanout for better propagation
-            .build()
-            .expect("Failed to build config");
+        let config = config_builder.build().expect("Failed to build config");
 
         let node = Node::new(config)
             .await
@@ -71,37 +84,21 @@ async fn five_node_mesh_broadcast() {
         counters.push(counter);
     }
 
-    // Wait for mesh to form; nodes need time to discover each other
-    // Increased for reliability on slower systems and busy CI environments
-    tokio::time::sleep(Duration::from_millis(2000)).await;
+    wait_for_peers(&nodes[0], 4, "node1 holds the four leaves").await;
 
-    // Each node broadcasts a unique message
     for (i, node) in nodes.iter().enumerate() {
         node.broadcast(Bytes::from(format!("message from node{}", i + 1)))
             .await
             .expect("Failed to broadcast");
-        // Small delay between broadcasts to avoid overwhelming the network
-        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
-    // Wait for all messages to propagate through the network
-    tokio::time::sleep(Duration::from_millis(5000)).await;
+    wait_until(
+        "every node to receive a message from a peer",
+        READY_TIMEOUT,
+        || counters.iter().all(|c| c.load(Ordering::Relaxed) >= 1),
+    )
+    .await;
 
-    // Each node should receive messages from other nodes (4 messages expected)
-    // Note: Nodes do not receive their own broadcasts via the message handler
-    // With probabilistic forwarding (70%), network topology, and potential timing issues,
-    // expect at least 1 message (conservative to avoid flakiness)
-    for (i, counter) in counters.iter().enumerate() {
-        let received = counter.load(Ordering::Relaxed);
-        assert!(
-            received >= 1,
-            "Node{} should have received at least 1 message, got {}",
-            i + 1,
-            received
-        );
-    }
-
-    // Cleanup
     for node in nodes {
         node.shutdown().await.ok();
     }
@@ -112,7 +109,6 @@ async fn five_node_mesh_broadcast() {
 async fn message_deduplication() {
     init_tracing();
 
-    // Create three-node cluster
     let node1 = Node::new(NodeConfig::default())
         .await
         .expect("Failed to create node1");
@@ -153,37 +149,21 @@ async fn message_deduplication() {
         .await;
     node3.start().await.expect("Failed to start node3");
 
-    // Wait for connections
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_peers(&node1, 2, "node1 holds both leaves").await;
 
-    // Broadcast the same message multiple times from node1
     for _ in 0..5 {
         node1
             .broadcast(Bytes::from("dedup test"))
             .await
             .expect("Failed to broadcast");
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Wait for propagation
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Each node should receive the message despite multiple broadcasts
-    // (The gossip protocol deduplicates based on message ID, but message handler
-    // is called for each broadcast since they have unique sequence numbers)
-    let count2 = received2.load(Ordering::Relaxed);
-    let count3 = received3.load(Ordering::Relaxed);
-
-    // Each broadcast creates a new message with unique ID, so expect to receive all 5
-    // However, with probabilistic forwarding (70%), some may be dropped
-    assert!(
-        (3..=5).contains(&count2),
-        "Node2 should receive 3-5 messages (70% forward probability), got {count2}"
-    );
-    assert!(
-        (3..=5).contains(&count3),
-        "Node3 should receive 3-5 messages (70% forward probability), got {count3}"
-    );
+    wait_until(
+        "both leaves to deliver all five distinct broadcasts",
+        READY_TIMEOUT,
+        || received2.load(Ordering::Relaxed) == 5 && received3.load(Ordering::Relaxed) == 5,
+    )
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();
@@ -195,15 +175,20 @@ async fn message_deduplication() {
 async fn high_volume_broadcast() {
     init_tracing();
 
-    // Create three-node cluster
-    let node1 = Node::new(NodeConfig::default())
-        .await
-        .expect("Failed to create node1");
+    let node1 = Node::new(
+        NodeConfigBuilder::new()
+            .anti_entropy(brisk_anti_entropy())
+            .build()
+            .expect("Failed to build node1 config"),
+    )
+    .await
+    .expect("Failed to create node1");
     node1.start().await.expect("Failed to start node1");
     let addr1 = node1.local_addr().await.expect("No local address");
 
     let config2 = NodeConfigBuilder::new()
         .add_bootstrap_peer(addr1)
+        .anti_entropy(brisk_anti_entropy())
         .build()
         .expect("Failed to build config");
     let node2 = Node::new(config2).await.expect("Failed to create node2");
@@ -219,6 +204,7 @@ async fn high_volume_broadcast() {
 
     let config3 = NodeConfigBuilder::new()
         .add_bootstrap_peer(addr1)
+        .anti_entropy(brisk_anti_entropy())
         .build()
         .expect("Failed to build config");
     let node3 = Node::new(config3).await.expect("Failed to create node3");
@@ -232,11 +218,9 @@ async fn high_volume_broadcast() {
         .await;
     node3.start().await.expect("Failed to start node3");
 
-    // Wait for connections
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_peers(&node1, 2, "node1 holds both leaves").await;
 
-    // Broadcast 50 unique messages
-    let message_count = 50;
+    let message_count = 50u32;
     for i in 0..message_count {
         node1
             .broadcast(Bytes::from(format!("message {i}")))
@@ -244,23 +228,16 @@ async fn high_volume_broadcast() {
             .expect("Failed to broadcast");
     }
 
-    // Wait for propagation
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    let count2 = received2.load(Ordering::Relaxed);
-    let count3 = received3.load(Ordering::Relaxed);
-
-    // Both nodes should receive most messages (allow for some loss due to probabilistic forwarding)
-    // Expect at least 80% delivery rate
-    let min_expected = (message_count as f64 * 0.8) as u32;
-    assert!(
-        count2 >= min_expected,
-        "Node2 should receive at least {min_expected} messages, got {count2}"
-    );
-    assert!(
-        count3 >= min_expected,
-        "Node3 should receive at least {min_expected} messages, got {count3}"
-    );
+    let min_expected = message_count * 4 / 5; // 80% delivery
+    wait_until(
+        "both leaves to converge to at least 80% of the burst",
+        READY_TIMEOUT,
+        || {
+            received2.load(Ordering::Relaxed) >= min_expected
+                && received3.load(Ordering::Relaxed) >= min_expected
+        },
+    )
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();

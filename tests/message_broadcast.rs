@@ -4,10 +4,9 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 use bytes::Bytes;
-use common::init_tracing;
+use common::{READY_TIMEOUT, init_tracing, wait_for_peers, wait_until};
 use grapevine::{Node, NodeConfig, NodeConfigBuilder};
 
 /// Test message broadcast and reception between two nodes.
@@ -42,19 +41,17 @@ async fn two_node_message_broadcast() {
 
     node2.start().await.expect("Failed to start node2");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_peers(&node1, 1, "node1 connects to node2").await;
 
     node1
         .broadcast(Bytes::from("test message"))
         .await
         .expect("Failed to broadcast");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    assert!(
-        received.load(Ordering::Relaxed) >= 1,
-        "Node2 should have received at least one message"
-    );
+    wait_until("node2 to receive the broadcast", READY_TIMEOUT, || {
+        received.load(Ordering::Relaxed) >= 1
+    })
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();
@@ -65,14 +62,12 @@ async fn two_node_message_broadcast() {
 async fn three_node_broadcast_propagation() {
     init_tracing();
 
-    // Create node1 (seed)
     let node1 = Node::new(NodeConfig::default())
         .await
         .expect("Failed to create node1");
     node1.start().await.expect("Failed to start node1");
     let addr1 = node1.local_addr().await.expect("No local address");
 
-    // Create node2 (connects to node1)
     let config2 = NodeConfigBuilder::new()
         .add_bootstrap_peer(addr1)
         .build()
@@ -90,7 +85,6 @@ async fn three_node_broadcast_propagation() {
         .await;
     node2.start().await.expect("Failed to start node2");
 
-    // Create node3 (connects to node1)
     let config3 = NodeConfigBuilder::new()
         .add_bootstrap_peer(addr1)
         .build()
@@ -108,27 +102,19 @@ async fn three_node_broadcast_propagation() {
         .await;
     node3.start().await.expect("Failed to start node3");
 
-    // Wait for peer discovery
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_peers(&node1, 2, "node1 holds both leaves").await;
 
-    // Broadcast from node1
     node1
         .broadcast(Bytes::from("propagation test"))
         .await
         .expect("Failed to broadcast");
 
-    // Wait for propagation
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Both node2 and node3 should receive the message
-    assert!(
-        received2.load(Ordering::Relaxed) >= 1,
-        "Node2 should have received the message"
-    );
-    assert!(
-        received3.load(Ordering::Relaxed) >= 1,
-        "Node3 should have received the message"
-    );
+    wait_until(
+        "both leaves to receive the broadcast",
+        READY_TIMEOUT,
+        || received2.load(Ordering::Relaxed) >= 1 && received3.load(Ordering::Relaxed) >= 1,
+    )
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();

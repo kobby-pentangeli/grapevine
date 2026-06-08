@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::init_tracing;
+use common::{init_tracing, wait_for_peers};
 use grapevine::{Node, NodeConfig, NodeConfigBuilder, RateLimitConfig};
 
 /// Test that a node can start up successfully.
@@ -169,7 +169,7 @@ async fn graceful_shutdown_with_peers() {
     let node2 = Node::new(config2).await.expect("Failed to create node2");
     node2.start().await.expect("Failed to start node2");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_peers(&node1, 1, "node1 connects to node2 before shutdown").await;
 
     let shutdown_result = tokio::time::timeout(Duration::from_secs(2), node1.shutdown()).await;
 
