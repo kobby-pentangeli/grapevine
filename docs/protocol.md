@@ -16,6 +16,10 @@ This hybrid approach provides:
 
 ## Protocol Guarantees
 
+### Origin Authenticity and Integrity
+
+Every message is Ed25519-signed by its origin and verified on receipt. A node cannot forge a message attributed to an origin whose key a recipient has already pinned, and any tampering with the signed fields is detected and the message dropped. See [Message Authenticity](#message-authenticity) for the full model.
+
 ### Eventual Consistency
 
 All nodes eventually receive all messages, even in the presence of:
@@ -31,14 +35,14 @@ Messages are delivered exactly once per node through:
 
 - Unique message identifiers (origin + sequence + timestamp)
 - Per-message deduplication cache with configurable TTL
-- Forward count tracking to prevent re-forwarding loops
+- Deduplication that prevents a node from re-forwarding a rumor it has already seen
 
 ### Bounded Message Propagation
 
 Messages do not propagate indefinitely through:
 
 - TTL mechanism (default: 10 hops)
-- Per-node forward count limits (default: max 5 forwards)
+- A single forward per node on first receipt, gated by `forward_probability`, with deduplication preventing re-forwarding
 - Time-based message eviction (default: 5 minutes)
 
 ### DoS Protection
@@ -46,7 +50,7 @@ Messages do not propagate indefinitely through:
 The protocol resists denial-of-service attacks via:
 
 - Per-peer token bucket rate limiting (100 capacity, 50 tokens/sec)
-- Maximum message size limits (default: 1MB)
+- Maximum message size limits (default: 10MB)
 - Automatic peer health tracking and disconnection
 
 ## Protocol Phases
@@ -75,10 +79,10 @@ During normal operation:
 When a node shuts down gracefully:
 
 1. Sends `Goodbye` messages to all connected peers
-2. Stops accepting new messages
-3. Waits for in-flight messages to complete (timeout: 500ms)
-4. Closes all peer connections
-5. Cleans up resources
+2. Stops the background tasks and the listener (no new connections are accepted)
+3. Stops reading, then drops the peer write channels so writers flush queued frames (the goodbyes) and exit
+4. Awaits the connection tasks, bounded by a short grace so a stuck socket cannot hang shutdown
+5. Clears the deduplication cache
 
 ## Message Types (Payload Variants)
 
@@ -101,11 +105,11 @@ When a node shuts down gracefully:
    /// Response with peer list
    PeerListResponse { peers: Vec<SocketAddr> },
 
-   /// Anti-entropy digest (message IDs this node knows about)
-   AntiEntropyDigest { message_ids: Vec<MessageId> },
+   /// Anti-entropy digest: the sender's per-origin version vector
+   AntiEntropyDigest { version_vector: Vec<(SocketAddr, u64)> },
 
-   /// Request for specific messages by ID
-   MessageRequest { ids: Vec<MessageId> },
+   /// Pull request: the sender's per-origin version vector
+   MessageRequest { version_vector: Vec<(SocketAddr, u64)> },
 
    /// Response containing requested messages
    MessageResponse { messages: Vec<Message> },
@@ -130,6 +134,48 @@ Messages use length-prefixed framing:
 
 Length is big-endian `u32`.
 
+Inside the bincode payload, every message carries, in addition to its `id`, `ttl`, and `payload`:
+
+- `origin_key`: the originating node's 32-byte Ed25519 public key
+- `signature`: a 64-byte Ed25519 signature over the immutable fields
+
+## Message Authenticity
+
+Each node generates an Ed25519 keypair at startup; its `PeerId` is the public key. Identity is the key, not the socket address.
+
+### Signing
+
+When a node authors a message it signs a domain-separated preimage covering the message's immutable fields only:
+
+```txt
+"grapevine.message.v1" || origin || sequence || payload
+```
+
+The mutable `ttl` and the metadata-only `MessageId::timestamp` are excluded, so a signature survives the TTL decrements that forwarding applies: a rumor is signed once by its origin and verified unchanged at every hop. The origin's public key and the signature are embedded in the message.
+
+### Verification and origin pinning
+
+On receipt, before a message is acted on, the recipient:
+
+1. Verifies the signature against the embedded public key (rejecting unsigned, malformed-key, or tampered messages).
+2. Enforces a trust-on-first-use binding: the first authentic message seen for an origin address pins that address to its key; any later message claiming the same origin under a different key is rejected as a spoofing attempt.
+
+Repaired messages delivered through anti-entropy `MessageResponse`s are each verified the same way before being accepted, so anti-entropy cannot be used to inject forged or tampered messages.
+
+### Threat model
+
+Guaranteed:
+
+- **Integrity** of the origin, sequence, and payload.
+- **Proof of possession**: a valid signature proves the sender holds the private key for the embedded public key.
+- **Origin authenticity** for any origin whose key has already been pinned.
+
+Out of scope for v1.1.0 (do not rely on these):
+
+- **No confidentiality.** Messages are plaintext; confidentiality needs the deferred TLS/QUIC transport.
+- **No first-contact MITM protection.** Pinning is trust-on-first-use; an attacker on the path before a key is pinned can substitute a key for an unseen origin. A PKI or transport authentication closes this and is deferred.
+- **No Sybil resistance.** Keypairs are self-minted; nothing limits how many a peer creates.
+
 ## Message Deduplication
 
 Each message has a unique ID:
@@ -142,11 +188,12 @@ struct MessageId {
 }
 ```
 
+Identity is `(origin, sequence)`; `timestamp` is metadata and is excluded from equality and hashing, so a node's wall clock cannot affect message identity. Only broadcast (`Application`) messages are stored and reconciled here. Direct messages are unicast and single-hop, and control messages are handled on receipt, so neither is deduplicated through this cache.
+
 Nodes track seen messages in a `DashMap<MessageId, MessageEntry>` where `MessageEntry` contains:
 
-- `timestamp`: When the message was first seen
-- `forward_count`: How many times this node has forwarded the message
-- `ttl`: Current TTL value
+- `message`: The full message
+- `first_seen`: When the message was first seen (drives dedup-cache eviction)
 
 Messages are evicted after 5 minutes (configurable via `message_dedup_ttl`).
 
@@ -159,35 +206,32 @@ Messages are evicted after 5 minutes (configurable via `message_dedup_ttl`).
 
 ## Epidemic Broadcast
 
-1. Node creates message with TTL (default: 10)
+1. Node creates a message with a TTL (default: 10) and its next per-origin sequence
 2. Sends to `fanout` random peers (default: 3)
 3. Receiving peers:
    - Check if already seen (deduplication)
    - Store in `seen_messages` cache
-   - Make probabilistic forwarding decision (default: 70% probability)
-   - Check forward count limit (default: max 5 forwards)
+   - With probability `forward_probability` (default: 70%), forward once
 4. If forwarding:
    - Decrement TTL
-   - Increment forward count
-   - Re-gossip to random peers
-5. Process repeats until TTL = 0 or max forwards reached
+   - Re-gossip to `fanout` peers, excluding the sender and the origin so the rumor is never echoed straight back
+5. Propagation stops when TTL reaches 1 or the forward coin fails; deduplication prevents any node from forwarding the same message twice
+
+This is the "blind" rumor-mongering variant (Demers et al. 1987 §1.3). The feedback and counter variants (stop once already-infected peers are met) are a deferred optimization.
 
 Configuration:
 
-- `epidemic.forward_probability`: Probability of forwarding (default: 0.7)
-- `epidemic.max_forwards`: Maximum forwards per node (default: 5)
+- `epidemic.forward_probability`: Probability of forwarding a newly learned rumor (default: 0.7)
 
 ## Anti-Entropy
 
-Implemented to ensure eventual consistency:
+Reconciles the broadcast set with peers to guarantee eventual consistency, using scuttlebutt-style version vectors (van Renesse et al. 2008 §2):
 
-1. Periodically (default: every 30s) exchange message digests with peers
-2. Each node sends `AntiEntropyDigest` containing all known `MessageId`s
-3. Receiving peer compares digest with local `seen_messages`
-4. If missing messages detected:
-   - Send `MessageRequest` with missing `MessageId`s
-   - Peer responds with `MessageResponse` containing full messages
-5. Requested messages are processed normally (deduplicated, forwarded if needed)
+1. Periodically (default: every 30s) pick `fanout` peers to reconcile with
+2. Each node sends `AntiEntropyDigest` carrying its per-origin version vector (`origin -> lowest sequence still needed`)
+3. The receiving peer pushes back every message it holds at or above each advertised sequence (a `MessageResponse`, chunked to stay within the frame limit), then replies with its own version vector as a `MessageRequest`
+4. The original sender answers that request the same way, completing a bounded push-pull round (Demers §1.2)
+5. Repaired messages enter `seen_messages` and are re-advertised on the next round
 
 Configuration:
 
@@ -264,7 +308,7 @@ RateLimitConfig {
 
 ### Message Size Limits
 
-Configurable maximum message size (default: 1MB):
+Configurable maximum message size (default: 10MB):
 
 - Prevents memory exhaustion attacks
 - Enforced at codec layer before deserialization

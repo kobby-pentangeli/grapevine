@@ -213,9 +213,9 @@ grapevine@127.0.0.1:8000> /broadcast Hello everyone!
 **How it works:**
 
 1. Message is sent to a random subset of connected peers (fanout)
-2. Each receiving peer probabilistically forwards to their peers (70% default)
-3. Message propagates through the network in O(log N) hops
-4. Anti-entropy ensures eventual delivery even if epidemic broadcast misses some nodes
+2. Each newly infected peer forwards it once, gated by the forward probability (70% default)
+3. Epidemic spread is exponential, so a rumor reaches the network in a logarithmic number of gossip rounds in expectation, bounded by the TTL (default: 10 hops)
+4. Anti-entropy reconciliation repairs any nodes the probabilistic pass misses, guaranteeing eventual delivery
 
 **Received messages are displayed automatically:**
 

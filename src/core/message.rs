@@ -1,40 +1,62 @@
 //! Message types for gossip protocol.
 
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
-static MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(0);
+use crate::core::identity::{PeerId, Signature};
 
-/// Unique identifier for a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Unique identifier for a message: the originating node plus that node's
+/// monotonic per-origin sequence number.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct MessageId {
-    /// Origin node address
+    /// Canonical (listening) address of the node that originated the message.
     pub origin: SocketAddr,
-    /// Sequence number
+
+    /// Per-origin monotonic sequence number assigned by the originating node.
     pub sequence: u64,
-    /// Timestamp (milliseconds since epoch)
+
+    /// Creation time in milliseconds since the Unix epoch.
+    ///
+    /// Metadata only. Identity is `(origin, sequence)`: `timestamp` is excluded
+    /// from [`PartialEq`], [`Eq`], and [`Hash`] so a node's wall clock can
+    /// neither split one logical message into two keys nor collapse two distinct
+    /// messages into one.
     pub timestamp: u64,
 }
 
 impl MessageId {
-    /// Create a new message ID.
-    pub fn new(origin: SocketAddr) -> Self {
-        let sequence = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    /// Create an identifier for a message originated by `origin` at `sequence`.
+    pub fn new(origin: SocketAddr, sequence: u64) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as u64;
+            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
 
         Self {
             origin,
             sequence,
             timestamp,
         }
+    }
+}
+
+impl PartialEq for MessageId {
+    fn eq(&self, other: &Self) -> bool {
+        self.origin == other.origin && self.sequence == other.sequence
+    }
+}
+
+impl Eq for MessageId {}
+
+impl Hash for MessageId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.origin.hash(state);
+        self.sequence.hash(state);
     }
 }
 
@@ -50,37 +72,37 @@ pub struct Message {
     /// Unique message identifier
     pub id: MessageId,
 
-    /// Time-to-live (hop count)
+    /// Time-to-live: the remaining hop budget, decremented at each forward.
     pub ttl: u8,
 
     /// Message payload
     pub payload: Payload,
 
-    /// Signature (if crypto feature enabled)
-    #[cfg(feature = "crypto")]
-    pub signature: Option<Vec<u8>>,
+    /// The originating node's Ed25519 public key, signed over and verified
+    /// against on receipt.
+    pub origin_key: PeerId,
+
+    /// Ed25519 signature over the domain-separated `(origin, sequence, payload)`.
+    pub signature: Signature,
 }
 
 impl Message {
-    /// Create a new gossip message.
-    pub fn new(origin: SocketAddr, payload: Payload) -> Self {
-        Self {
-            id: MessageId::new(origin),
-            ttl: 10, // Default TTL
-            payload,
-            #[cfg(feature = "crypto")]
-            signature: None,
-        }
+    /// Default time-to-live (hop count) assigned to a newly authored message.
+    pub const DEFAULT_TTL: u8 = 10;
+
+    /// Create an **unsigned** gossip message originated by `origin` at `sequence`.
+    pub fn new(origin: SocketAddr, sequence: u64, payload: Payload) -> Self {
+        Self::with_ttl(origin, sequence, payload, Self::DEFAULT_TTL)
     }
 
-    /// Create with custom TTL.
-    pub fn with_ttl(origin: SocketAddr, payload: Payload, ttl: u8) -> Self {
+    /// Create an **unsigned** message with a custom TTL.
+    pub fn with_ttl(origin: SocketAddr, sequence: u64, payload: Payload, ttl: u8) -> Self {
         Self {
-            id: MessageId::new(origin),
+            id: MessageId::new(origin, sequence),
             ttl,
             payload,
-            #[cfg(feature = "crypto")]
-            signature: None,
+            origin_key: PeerId::UNSIGNED,
+            signature: Signature::UNSIGNED,
         }
     }
 
@@ -102,15 +124,6 @@ pub enum Payload {
     /// User-defined application data
     Application(Bytes),
 
-    /// Peer discovery request
-    PeerDiscovery,
-
-    /// Peer list announcement
-    PeerAnnouncement {
-        /// List of known peers
-        peers: Vec<SocketAddr>,
-    },
-
     /// Heartbeat/keep-alive
     Heartbeat {
         /// Sender's address
@@ -126,16 +139,20 @@ pub enum Payload {
         peers: Vec<SocketAddr>,
     },
 
-    /// Anti-entropy digest (message IDs this node knows about)
+    /// Anti-entropy digest: the sender's per-origin reconciliation summary.
     AntiEntropyDigest {
-        /// Set of known message IDs
-        message_ids: Vec<MessageId>,
+        /// For each origin, the lowest broadcast sequence the sender still
+        /// needs (equivalently, the length of its contiguous prefix). The
+        /// recipient pushes back every message it holds at or above this
+        /// sequence, so a smaller value requests more history.
+        version_vector: Vec<(SocketAddr, u64)>,
     },
 
-    /// Request for specific messages by ID
+    /// Pull request: the sender's per-origin reconciliation summary, asking the
+    /// recipient to push every message it holds beyond these sequences.
     MessageRequest {
-        /// Message IDs being requested
-        ids: Vec<MessageId>,
+        /// Same shape and meaning as `AntiEntropyDigest`'s `version_vector`.
+        version_vector: Vec<(SocketAddr, u64)>,
     },
 
     /// Response containing requested messages
@@ -171,19 +188,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_message_id() {
+    fn message_id_identity_is_origin_and_sequence_only() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let id1 = MessageId::new(addr);
-        let id2 = MessageId::new(addr);
-        assert_ne!(id1.sequence, id2.sequence);
-        assert_eq!(id1.origin, addr);
-        assert_eq!(id2.origin, addr);
+        let a = MessageId::new(addr, 7);
+        let b = MessageId::new(addr, 7);
+        let c = MessageId::new(addr, 8);
+
+        assert_eq!(
+            a, b,
+            "same (origin, sequence) is one identity regardless of the clock"
+        );
+        assert_ne!(a, c, "a different sequence is a different message");
+
+        let mut set = std::collections::HashSet::new();
+        assert!(set.insert(a));
+        assert!(!set.insert(b), "equal ids collapse to one hash-set entry");
+        assert!(set.insert(c));
     }
 
     #[test]
     fn decrement_ttl() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let mut msg = Message::with_ttl(addr, Payload::PeerDiscovery, 2);
+        let mut msg = Message::with_ttl(addr, 0, Payload::PeerListRequest, 2);
         assert!(msg.decrement_ttl());
         assert_eq!(msg.ttl, 1);
         assert!(msg.decrement_ttl());
@@ -201,24 +227,6 @@ mod tests {
         match payload {
             Payload::Application(d) => assert_eq!(d, data),
             _ => panic!("Expected Application payload"),
-        }
-
-        // Payload::PeerDiscovery
-        let payload = Payload::PeerDiscovery;
-        assert!(payload.is_protocol_message());
-
-        // Payload::PeerAnnouncement
-        let peers = vec![
-            "127.0.0.1:8001".parse().unwrap(),
-            "127.0.0.1:8002".parse().unwrap(),
-        ];
-        let payload = Payload::PeerAnnouncement {
-            peers: peers.clone(),
-        };
-        assert!(payload.is_protocol_message());
-        match payload {
-            Payload::PeerAnnouncement { peers: p } => assert_eq!(p, peers),
-            _ => panic!("Expected PeerAnnouncement payload"),
         }
 
         // Payload::Heartbeat
@@ -277,16 +285,14 @@ mod tests {
     }
 
     #[test]
-    fn multiple_messages_different_sequences() {
+    fn message_carries_its_explicit_sequence() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let messages = (0..10)
-            .map(|_| Message::new(addr, Payload::PeerDiscovery))
+        let messages = (0u64..10)
+            .map(|seq| Message::new(addr, seq, Payload::PeerListRequest))
             .collect::<Vec<_>>();
 
-        for i in 0..messages.len() - 1 {
-            for j in i + 1..messages.len() {
-                assert_ne!(messages[i].id.sequence, messages[j].id.sequence);
-            }
+        for (index, message) in messages.iter().enumerate() {
+            assert_eq!(message.id.sequence, u64::try_from(index).unwrap());
         }
     }
 
@@ -298,6 +304,7 @@ mod tests {
 
         let message = Message::new(
             sender,
+            0,
             Payload::DirectMessage {
                 recipient,
                 data: data.clone(),

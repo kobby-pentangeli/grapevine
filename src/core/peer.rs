@@ -1,14 +1,13 @@
 //! Peer management types.
 
-use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::error::TrySendError;
+use tracing::debug;
 
-use crate::{Error, Result};
+use crate::{Error, Message, Result};
 
 /// Age bonus divisor for health score calculation (seconds).
 const AGE_BONUS_DIVISOR: f64 = 300.0;
@@ -25,22 +24,6 @@ const MAX_CONSECUTIVE_PENALTY: f64 = 0.5;
 /// Maximum consecutive failures before peer disconnection.
 const MAX_CONSECUTIVE_FAILURES: u64 = 5;
 
-/// Unique identifier for a peer (currently just its socket address).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PeerId(pub SocketAddr);
-
-impl fmt::Display for PeerId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<SocketAddr> for PeerId {
-    fn from(addr: SocketAddr) -> Self {
-        Self(addr)
-    }
-}
-
 /// State of a peer connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerState {
@@ -54,11 +37,11 @@ pub enum PeerState {
     Disconnected,
 }
 
-/// Information about a peer.
+/// Information about a single live connection.
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
-    /// Peer identifier
-    pub id: PeerId,
+    /// Connection address of the peer
+    pub addr: SocketAddr,
 
     /// Current state
     pub state: PeerState,
@@ -83,11 +66,11 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
-    /// Create new peer info.
-    pub fn new(id: PeerId) -> Self {
+    /// Create new peer info for a connection at `addr`.
+    pub fn new(addr: SocketAddr) -> Self {
         let now = Instant::now();
         Self {
-            id,
+            addr,
             state: PeerState::Connecting,
             last_seen: now,
             connected_at: now,
@@ -116,7 +99,7 @@ impl PeerInfo {
     /// Update last seen timestamp.
     pub fn update_last_seen(&mut self) {
         self.last_seen = Instant::now();
-        if self.state == PeerState::Stale {
+        if matches!(self.state, PeerState::Connecting | PeerState::Stale) {
             self.state = PeerState::Connected;
         }
     }
@@ -146,18 +129,23 @@ impl PeerInfo {
 
     /// Calculate health score (0.0 = poor, 1.0 = excellent).
     pub fn health_score(&self) -> f64 {
-        let total_attempts = self.messages_sent + self.message_failures;
+        let total_attempts = self.messages_sent.saturating_add(self.message_failures);
         if total_attempts == 0 {
             return 1.0;
         }
 
-        let success_rate = self.messages_sent as f64 / total_attempts as f64;
+        let sent = f64::from(u32::try_from(self.messages_sent).unwrap_or(u32::MAX));
+        let total = f64::from(u32::try_from(total_attempts).unwrap_or(u32::MAX));
+        let success_rate = sent / total;
 
-        let age_seconds = self.connected_at.elapsed().as_secs() as f64;
+        let age_seconds =
+            f64::from(u32::try_from(self.connected_at.elapsed().as_secs()).unwrap_or(u32::MAX));
         let age_bonus = (age_seconds / AGE_BONUS_DIVISOR).min(MAX_AGE_BONUS);
 
-        let consecutive_penalty = (self.consecutive_failures as f64 * CONSECUTIVE_FAILURE_PENALTY)
-            .min(MAX_CONSECUTIVE_PENALTY);
+        let consecutive_penalty =
+            (f64::from(u32::try_from(self.consecutive_failures).unwrap_or(u32::MAX))
+                * CONSECUTIVE_FAILURE_PENALTY)
+                .min(MAX_CONSECUTIVE_PENALTY);
 
         (success_rate + age_bonus - consecutive_penalty).clamp(0.0, 1.0)
     }
@@ -173,37 +161,43 @@ impl PeerInfo {
 pub struct Peer {
     /// Peer information
     pub info: PeerInfo,
-
-    /// Channel for sending messages to this peer
-    sender: UnboundedSender<Bytes>,
+    /// Bounded channel to this peer's writer task.
+    sender: Sender<Message>,
 }
 
 impl Peer {
-    /// Create a new peer.
-    pub fn new(id: PeerId, sender: UnboundedSender<Bytes>) -> Self {
+    /// Create a new peer for the connection at `addr`.
+    pub fn new(addr: SocketAddr, sender: Sender<Message>) -> Self {
         Self {
-            info: PeerInfo::new(id),
+            info: PeerInfo::new(addr),
             sender,
         }
     }
 
-    /// Send data to this peer.
-    pub fn send(&mut self, data: Bytes) -> Result<()> {
-        match self.sender.send(data) {
+    /// Queue a message for this peer's writer task.
+    pub fn send(&mut self, message: Message) -> Result<()> {
+        match self.sender.try_send(message) {
             Ok(()) => {
                 self.info.increment_sent();
                 Ok(())
             }
-            Err(err) => {
+            Err(TrySendError::Full(_)) => {
+                debug!(
+                    "Write channel full for {}, dropping message",
+                    self.info.addr
+                );
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => {
                 self.info.record_failure();
-                Err(Error::Channel(err.to_string()))
+                Err(Error::Channel("peer write channel closed".to_string()))
             }
         }
     }
 
-    /// Get peer ID.
-    pub fn id(&self) -> PeerId {
-        self.info.id
+    /// Get the peer's connection address.
+    pub fn addr(&self) -> SocketAddr {
+        self.info.addr
     }
 
     /// Get peer state.
@@ -214,12 +208,43 @@ impl Peer {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::*;
+    use crate::Payload;
+
+    fn message(seq: u64) -> Message {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        Message::new(
+            addr,
+            seq,
+            Payload::Application(Bytes::from(format!("m{seq}"))),
+        )
+    }
+
+    #[test]
+    fn update_last_seen_drives_state_machine() {
+        let addr = "127.0.0.1:8000".parse().unwrap();
+        let mut info = PeerInfo::new(addr);
+        assert_eq!(info.state, PeerState::Connecting);
+
+        info.update_last_seen();
+        assert_eq!(info.state, PeerState::Connected);
+
+        info.mark_stale();
+        assert_eq!(info.state, PeerState::Stale);
+        info.update_last_seen();
+        assert_eq!(info.state, PeerState::Connected);
+
+        info.mark_disconnected();
+        info.update_last_seen();
+        assert_eq!(info.state, PeerState::Disconnected);
+    }
 
     #[test]
     fn peer_info_saturating_counters() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let mut info = PeerInfo::new(PeerId(addr));
+        let mut info = PeerInfo::new(addr);
 
         info.messages_received = u64::MAX;
         info.increment_received();
@@ -233,36 +258,30 @@ mod tests {
     #[test]
     fn peer_send_success() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
-        let mut peer = Peer::new(peer_id, tx);
-        let data = Bytes::from("test data");
+        let mut peer = Peer::new(addr, tx);
+        let msg = message(1);
 
         assert_eq!(peer.info.messages_sent, 0);
-        let result = peer.send(data.clone());
-        assert!(result.is_ok());
+        assert!(peer.send(msg.clone()).is_ok());
         assert_eq!(peer.info.messages_sent, 1);
 
-        // Verify data was sent
-        let received = rx.try_recv();
-        assert!(received.is_ok());
-        assert_eq!(received.unwrap(), data);
+        let received = rx.try_recv().expect("message was queued");
+        assert_eq!(received.id, msg.id);
     }
 
     #[test]
     fn peer_send_failure_channel_closed() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel::<Message>(16);
 
         // Drop receiver to close channel
         drop(rx);
 
-        let mut peer = Peer::new(peer_id, tx);
-        let data = Bytes::from("test data");
+        let mut peer = Peer::new(addr, tx);
 
-        let result = peer.send(data);
+        let result = peer.send(message(1));
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::Channel(_)));
     }
@@ -270,29 +289,39 @@ mod tests {
     #[test]
     fn peer_multiple_sends() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
-        let mut peer = Peer::new(peer_id, tx);
+        let mut peer = Peer::new(addr, tx);
 
-        for i in 0..5 {
-            let data = Bytes::from(format!("message {i}"));
-            assert!(peer.send(data.clone()).is_ok());
-            assert_eq!(peer.info.messages_sent, i + 1);
+        for i in 1..=5 {
+            assert!(peer.send(message(i)).is_ok());
+            assert_eq!(peer.info.messages_sent, i);
 
             let received = rx.try_recv().unwrap();
-            assert_eq!(received, Bytes::from(format!("message {i}")));
+            assert_eq!(received.id.sequence, i);
         }
     }
 
     #[test]
-    fn peer_id_serialization() {
+    fn send_drops_newest_when_channel_full() {
         let addr = "127.0.0.1:8000".parse().unwrap();
-        let peer_id = PeerId(addr);
+        // Capacity 1, receiver never drains: the second send overflows.
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Message>(1);
 
-        let serialized = serde_json::to_string(&peer_id).unwrap();
-        let deserialized: PeerId = serde_json::from_str(&serialized).unwrap();
+        let mut peer = Peer::new(addr, tx);
 
-        assert_eq!(peer_id, deserialized);
+        assert!(peer.send(message(1)).is_ok());
+        assert_eq!(peer.info.messages_sent, 1);
+
+        // Full channel: dropped, still Ok, and not counted as a send.
+        assert!(peer.send(message(2)).is_ok());
+        assert_eq!(
+            peer.info.messages_sent, 1,
+            "a dropped frame is not counted as sent"
+        );
+        assert_eq!(
+            peer.info.consecutive_failures, 0,
+            "backpressure is not a peer failure"
+        );
     }
 }

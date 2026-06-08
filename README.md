@@ -10,6 +10,7 @@ A modern, asynchronous peer-to-peer gossip protocol library and application.
 ## Features
 
 - **Async/await** - Built on Tokio for high-performance async I/O
+- **Authenticated messages** - Every message is Ed25519-signed by its origin and verified on receipt
 - **Epidemic broadcast** - Probabilistic message forwarding for efficient network coverage
 - **Anti-entropy** - Periodic synchronization ensures eventual consistency
 - **Rate limiting** - Per-peer token bucket rate limiting prevents DoS attacks
@@ -30,7 +31,7 @@ Or add manually to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-grapevine = "1.0"
+grapevine = "1.1"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
 ```
@@ -125,18 +126,19 @@ let config = NodeConfigBuilder::new()
     .build()?;
 ```
 
-## Feature Flags
+## Message Authenticity
 
-- `crypto` - Enable message signing and verification (deferred to `v1.1`)
+Each node holds an Ed25519 keypair (its `PeerId` is the public key), signs every message it originates over a domain-separated encoding of the immutable `(origin, sequence, payload)`, and embeds the public key. Recipients verify the signature and pin each origin address to the key it first presented (trust-on-first-use), so a peer cannot forge a message attributed to a pinned origin. This provides integrity and origin authenticity but **not** confidentiality; see [`docs/protocol.md`](docs/protocol.md#message-authenticity) for the full threat model.
 
-Note: QUIC transport support is planned for `v1.1+`
+Note: QUIC transport and TLS (for confidentiality) are planned for a future release.
 
 ## Architecture
 
 Grapevine implements a push-based gossip protocol with the following components:
 
-- **Epidemic Broadcast**: Probabilistic message forwarding (default 70% probability, max 5 forwards)
-- **Anti-Entropy**: Periodic digest exchange and repair (every 30s) ensures eventual consistency
+- **Message Authenticity**: Ed25519 signing and verification of every message, with trust-on-first-use origin pinning
+- **Epidemic Broadcast**: Probabilistic rumor mongering (blind variant; default 70% forward probability)
+- **Anti-Entropy**: Periodic version-vector reconciliation and repair (every 30s) ensures eventual consistency
 - **Peer Management**: Automatic health monitoring with state machine (Connecting => Connected => Stale => Disconnected)
 - **Rate Limiting**: Per-peer token bucket (100 capacity, 50 tokens/sec) prevents DoS attacks
 - **Message Deduplication**: Time-based eviction (5 minute TTL) prevents duplicates

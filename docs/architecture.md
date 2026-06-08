@@ -24,39 +24,43 @@ Grapevine is structured in layers:
 
 ### Core Types (`src/core/`)
 
-- **Message**: Gossip message structure with ID, TTL, and payload variants
-- **MessageCodec**: Length-prefixed framing and bincode serialization
-  - Message size limit: 1MB default (configurable)
+- **Message**: Gossip message structure with ID, TTL, payload, and the origin's public key plus signature
+- **MessageCodec**: Length-prefixed framing and bincode serialization. Message size limit: 10MB default (configurable)
+- **Identity**: Per-node Ed25519 keypair; signs authored messages and exposes the node's `PeerId`
+- **PeerId**: Cryptographic node identity (the Ed25519 public key)
 - **Peer**: Represents a connected peer with health tracking
-- **PeerInfo**: Peer metadata with health score, failure tracking, state machine
+- **PeerInfo**: Per-connection metadata with health score, failure tracking, state machine
 - **RateLimiter**: Per-peer token bucket rate limiting (100 capacity, 50 tokens/sec)
 
 ### Transport Layer (`src/transport/`)
 
-- **TcpTransport**: TCP-based transport with connection pooling
-- Note: QUIC transport planned for `v1.1+`
+- **Tcp**: TCP-based transport that owns the authoritative peer registry
+  - Each outbound message is encoded exactly once, by the peer's writer task at the socket
+  - Per-peer write channels are bounded and lossy under backpressure (drop-newest); the shared inbound channel is bounded and applies backpressure to readers
+  - Shutdown stops accepting, flushes queued frames (such as goodbyes), and awaits every connection task instead of sleeping a fixed grace period
+- Note: QUIC transport planned for a later release
 
 ### Protocol Engine (`src/protocol/`)
 
 - **Gossip**: Main protocol engine with background tasks
-- **Epidemic**: Probabilistic broadcast (70% forward probability, max 5 forwards)
-- **Anti-Entropy**: Periodic digest exchange and repair (every 30s)
+- **Epidemic**: Probabilistic broadcast (70% forward probability, blind variant)
+- **Anti-Entropy**: Periodic version-vector reconciliation and repair (every 30s)
 
 ## Message Flow
 
 1. Application calls `node.broadcast(data)`
-2. Protocol creates `Message` with unique ID (origin + sequence + timestamp)
+2. Protocol authors a `Message` with a per-origin `(origin, sequence)` ID and signs it with the node's `Identity`
 3. Message stored in `seen_messages` cache with metadata
-4. Message serialized via `MessageCodec`
-5. Transport sends to random subset of peers (fan-out)
+4. Transport enqueues the message to a random subset of peers (fan-out)
+5. Each peer's writer task encodes the message once (`MessageCodec`) and writes it to the socket
 6. Receiving nodes:
    - Rate limiting check (token bucket per peer)
    - Deserialize message via `MessageCodec`
+   - Authenticate: verify the origin's signature and enforce the trust-on-first-use origin/key binding (reject on failure)
    - Check if already seen (deduplication via `MessageId`)
    - Store in `seen_messages` with `MessageEntry` metadata
    - Forward to application handler (if `Application` payload)
-   - Probabilistic forwarding decision (70% probability)
-   - Re-gossip to other peers (if TTL > 1 and forward count < 5)
+   - With probability `forward_probability` (default 70%), re-gossip once (unchanged signature) to a fanout that excludes the sender and origin (if TTL > 1)
 
 ## Peer Discovery
 
@@ -93,8 +97,7 @@ All behavior is configurable via `NodeConfig`:
   - `interval`: How often to sync (default: 30s)
   - `fanout`: Peers to sync with (default: 3)
 - `epidemic`: Epidemic broadcast configuration
-  - `forward_probability`: Probability of forwarding (default: 0.7)
-  - `max_forwards`: Maximum forwards per message (default: 5)
+  - `forward_probability`: Probability of forwarding a newly learned rumor (default: 0.7)
 - `rate_limit`: Rate limiting configuration
   - `enabled`: Enable/disable rate limiting (default: true)
   - `capacity`: Token bucket capacity (default: 100)

@@ -1,6 +1,6 @@
 //! Implements `Node` configuration.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -8,8 +8,16 @@ use serde::{Deserialize, Serialize};
 use crate::core::message_codec::MAX_FRAME_SIZE;
 use crate::{AntiEntropyConfig, EpidemicConfig, Error, RateLimitConfig, Result, TransportConfig};
 
+const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+
 /// Configuration for a Grapevine node.
+///
+/// A `NodeConfig` cannot be constructed in an invalid state: every path that
+/// produces one---[`NodeConfigBuilder::build`] and `serde` deserialization (via
+/// [`NodeConfig::validate`])---rejects out-of-range values rather than silently
+/// accepting them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "NodeConfigUnchecked")]
 pub struct NodeConfig {
     /// Address to bind the node to
     pub bind_addr: SocketAddr,
@@ -47,10 +55,6 @@ pub struct NodeConfig {
     /// Rate limiting configuration
     pub rate_limit: RateLimitConfig,
 
-    /// Enable message signing (requires 'crypto' feature)
-    #[cfg(feature = "crypto")]
-    pub enable_signing: bool,
-
     /// Transport protocol
     pub transport: TransportConfig,
 }
@@ -58,7 +62,7 @@ pub struct NodeConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "127.0.0.1:0".parse().expect("valid address"),
+            bind_addr: DEFAULT_BIND_ADDR,
             bootstrap_peers: Vec::new(),
             gossip_interval: Duration::from_secs(5),
             fanout: 3,
@@ -70,10 +74,98 @@ impl Default for NodeConfig {
             anti_entropy: AntiEntropyConfig::default(),
             epidemic: EpidemicConfig::default(),
             rate_limit: RateLimitConfig::default(),
-            #[cfg(feature = "crypto")]
-            enable_signing: false,
             transport: TransportConfig::Tcp,
         }
+    }
+}
+
+impl NodeConfig {
+    /// Validate every configuration invariant.
+    ///
+    /// This is the single source of truth for what a well-formed `NodeConfig`
+    /// is. It runs both from [`NodeConfigBuilder::build`] and from `serde`
+    /// deserialization, so an invalid configuration cannot reach the rest of
+    /// the system through any path.
+    ///
+    /// # Errors
+    /// Returns [`Error::Config`] describing the first invariant that fails.
+    pub fn validate(&self) -> Result<()> {
+        if self.fanout == 0 {
+            return Err(Error::Config("fanout must be > 0".into()));
+        }
+        if self.max_peers == 0 {
+            return Err(Error::Config("max_peers must be > 0".into()));
+        }
+        if self.max_message_size == 0 {
+            return Err(Error::Config("max_message_size must be > 0".into()));
+        }
+        if self.fanout > self.max_peers {
+            return Err(Error::Config("fanout cannot exceed max_peers".into()));
+        }
+        if self.gossip_interval < Duration::from_secs(1) {
+            return Err(Error::Config("gossip_interval must be >= 1 second".into()));
+        }
+        if self.gossip_interval > Duration::from_secs(3600) {
+            return Err(Error::Config("gossip_interval must be <= 1 hour".into()));
+        }
+        if self.peer_timeout < Duration::from_secs(5) {
+            return Err(Error::Config("peer_timeout must be >= 5 seconds".into()));
+        }
+        if self.connection_timeout < Duration::from_secs(1) {
+            return Err(Error::Config(
+                "connection_timeout must be >= 1 second".into(),
+            ));
+        }
+        if self.rate_limit.enabled {
+            self.rate_limit.validate().map_err(Error::Config)?;
+        }
+        Ok(())
+    }
+}
+
+/// Unvalidated wire representation of [`NodeConfig`].
+///
+/// `serde` deserializes into this first; the [`TryFrom`] conversion then
+/// runs [`NodeConfig::validate`], which is what makes an invalid `NodeConfig`
+/// impossible to deserialize.
+#[derive(Deserialize)]
+struct NodeConfigUnchecked {
+    bind_addr: SocketAddr,
+    bootstrap_peers: Vec<SocketAddr>,
+    gossip_interval: Duration,
+    fanout: usize,
+    max_message_size: usize,
+    peer_timeout: Duration,
+    max_peers: usize,
+    connection_timeout: Duration,
+    message_dedup_ttl: Duration,
+    anti_entropy: AntiEntropyConfig,
+    epidemic: EpidemicConfig,
+    rate_limit: RateLimitConfig,
+    transport: TransportConfig,
+}
+
+impl TryFrom<NodeConfigUnchecked> for NodeConfig {
+    type Error = Error;
+
+    fn try_from(raw: NodeConfigUnchecked) -> Result<Self> {
+        let config = Self {
+            bind_addr: raw.bind_addr,
+            bootstrap_peers: raw.bootstrap_peers,
+            gossip_interval: raw.gossip_interval,
+            fanout: raw.fanout,
+            max_message_size: raw.max_message_size,
+            peer_timeout: raw.peer_timeout,
+            max_peers: raw.max_peers,
+            connection_timeout: raw.connection_timeout,
+            message_dedup_ttl: raw.message_dedup_ttl,
+            anti_entropy: raw.anti_entropy,
+            epidemic: raw.epidemic,
+            rate_limit: raw.rate_limit,
+            transport: raw.transport,
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -167,13 +259,6 @@ impl NodeConfigBuilder {
         self
     }
 
-    /// Enable message signing.
-    #[cfg(feature = "crypto")]
-    pub fn enable_signing(mut self, enable: bool) -> Self {
-        self.config.enable_signing = enable;
-        self
-    }
-
     /// Set transport configuration.
     pub fn transport(mut self, transport: TransportConfig) -> Self {
         self.config.transport = transport;
@@ -181,51 +266,13 @@ impl NodeConfigBuilder {
     }
 
     /// Build the configuration.
+    ///
+    /// # Errors
+    /// Returns [`Error::Config`] if any invariant in [`NodeConfig::validate`]
+    /// fails.
     pub fn build(self) -> Result<NodeConfig> {
-        self.validate()?;
+        self.config.validate()?;
         Ok(self.config)
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.config.fanout == 0 {
-            return Err(Error::Config("fanout must be > 0".into()));
-        }
-        if self.config.max_peers == 0 {
-            return Err(Error::Config("max_peers must be > 0".into()));
-        }
-        if self.config.max_message_size == 0 {
-            return Err(Error::Config("max_message_size must be > 0".into()));
-        }
-        if self.config.fanout > self.config.max_peers {
-            return Err(Error::Config("fanout cannot exceed max_peers".into()));
-        }
-        if self.config.gossip_interval < Duration::from_secs(1) {
-            return Err(Error::Config("gossip_interval must be >= 1 second".into()));
-        }
-        if self.config.gossip_interval > Duration::from_secs(3600) {
-            return Err(Error::Config("gossip_interval must be <= 1 hour".into()));
-        }
-        if self.config.peer_timeout < Duration::from_secs(5) {
-            return Err(Error::Config("peer_timeout must be >= 5 seconds".into()));
-        }
-        if self.config.connection_timeout < Duration::from_secs(1) {
-            return Err(Error::Config(
-                "connection_timeout must be >= 1 second".into(),
-            ));
-        }
-        if self.config.rate_limit.enabled {
-            if self.config.rate_limit.capacity == 0 {
-                return Err(Error::Config(
-                    "rate_limit capacity must be > 0 when enabled".into(),
-                ));
-            }
-            if self.config.rate_limit.refill_rate == 0 {
-                return Err(Error::Config(
-                    "rate_limit refill_rate must be > 0 when enabled".into(),
-                ));
-            }
-        }
-        Ok(())
     }
 }
 
@@ -360,5 +407,19 @@ mod tests {
             .build()
             .unwrap();
         assert!(matches!(config.transport, TransportConfig::Tcp));
+    }
+
+    #[test]
+    fn invalid_config_rejected_on_deserialize() {
+        let valid = serde_json::to_value(NodeConfig::default()).unwrap();
+        assert!(serde_json::from_value::<NodeConfig>(valid.clone()).is_ok());
+
+        let mut bad_fanout = valid.clone();
+        bad_fanout["fanout"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<NodeConfig>(bad_fanout).is_err());
+
+        let mut bad_rate_limit = valid;
+        bad_rate_limit["rate_limit"]["capacity"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<NodeConfig>(bad_rate_limit).is_err());
     }
 }

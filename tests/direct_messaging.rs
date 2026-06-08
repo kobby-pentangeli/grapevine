@@ -5,10 +5,9 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 use bytes::Bytes;
-use common::init_tracing;
+use common::{READY_TIMEOUT, init_tracing, wait_for_peer_addr, wait_until};
 use grapevine::{Node, NodeConfig, NodeConfigBuilder};
 
 /// Test sending a direct message between two nodes.
@@ -44,22 +43,17 @@ async fn two_node_direct_message() {
     node2.start().await.expect("Failed to start node2");
     let addr2 = node2.local_addr().await.expect("No local address");
 
-    // Wait longer for connection to fully establish (Windows needs more time)
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_peer_addr(&node1, addr2, "node1 learns node2's canonical address").await;
 
     node1
         .send_to_peer(addr2, Bytes::from("direct message"))
         .await
         .expect("Failed to send direct message");
 
-    // Wait for message to be received
-    tokio::time::sleep(Duration::from_millis(800)).await;
-
-    assert_eq!(
-        received.load(Ordering::Relaxed),
-        1,
-        "Node2 should have received exactly one direct message"
-    );
+    wait_until("node2 to receive the direct message", READY_TIMEOUT, || {
+        received.load(Ordering::Relaxed) == 1
+    })
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();
@@ -111,20 +105,18 @@ async fn direct_message_not_propagated() {
         .await;
     node3.start().await.expect("Failed to start node3");
 
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    wait_for_peer_addr(&node1, addr2, "node1 learns node2's canonical address").await;
 
     node1
         .send_to_peer(addr2, Bytes::from("private message"))
         .await
         .expect("Failed to send direct message");
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    wait_until("node2 to receive the direct message", READY_TIMEOUT, || {
+        received2.load(Ordering::Relaxed) == 1
+    })
+    .await;
 
-    assert_eq!(
-        received2.load(Ordering::Relaxed),
-        1,
-        "Node2 should have received the direct message"
-    );
     assert_eq!(
         received3.load(Ordering::Relaxed),
         0,
@@ -177,32 +169,29 @@ async fn bidirectional_direct_messaging() {
     node2.start().await.expect("Failed to start node2");
     let addr2 = node2.local_addr().await.expect("No local address");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_peer_addr(&node1, addr2, "node1 learns node2").await;
 
     node1
         .send_to_peer(addr2, Bytes::from("ping"))
         .await
         .expect("Failed to send ping");
 
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    wait_until("node2 to receive ping", READY_TIMEOUT, || {
+        received2.load(Ordering::Relaxed) == 1
+    })
+    .await;
+
+    wait_for_peer_addr(&node2, addr1, "node2 learns node1").await;
 
     node2
         .send_to_peer(addr1, Bytes::from("reply"))
         .await
         .expect("Failed to send reply");
 
-    tokio::time::sleep(Duration::from_millis(600)).await;
-
-    assert_eq!(
-        received2.load(Ordering::Relaxed),
-        1,
-        "Node2 should have received ping"
-    );
-    assert_eq!(
-        received1.load(Ordering::Relaxed),
-        1,
-        "Node1 should have received reply"
-    );
+    wait_until("node1 to receive reply", READY_TIMEOUT, || {
+        received1.load(Ordering::Relaxed) == 1
+    })
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();
@@ -218,7 +207,7 @@ async fn direct_message_to_nonexistent_peer() {
         .expect("Failed to create node");
     node.start().await.expect("Failed to start node");
 
-    let fake_addr = "127.0.0.1:9999".parse().unwrap();
+    let fake_addr = "127.0.0.1:9999".parse().expect("valid socket address");
 
     let result = node.send_to_peer(fake_addr, Bytes::from("test")).await;
 
@@ -258,23 +247,19 @@ async fn multiple_sequential_direct_messages() {
     node2.start().await.expect("Failed to start node2");
     let addr2 = node2.local_addr().await.expect("No local address");
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_for_peer_addr(&node1, addr2, "node1 learns node2").await;
 
     for i in 0..5 {
         node1
             .send_to_peer(addr2, Bytes::from(format!("message {i}")))
             .await
             .expect("Failed to send direct message");
-        tokio::time::sleep(Duration::from_millis(150)).await;
     }
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
-
-    assert_eq!(
-        received.load(Ordering::Relaxed),
-        5,
-        "Node2 should have received all 5 messages"
-    );
+    wait_until("node2 to receive all 5 messages", READY_TIMEOUT, || {
+        received.load(Ordering::Relaxed) == 5
+    })
+    .await;
 
     node1.shutdown().await.ok();
     node2.shutdown().await.ok();
@@ -332,26 +317,24 @@ async fn direct_message_isolation_in_mesh() {
         counters.push(counter);
     }
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
-
     let addr2 = nodes[1].local_addr().await.expect("No local address");
+
+    wait_for_peer_addr(&nodes[0], addr2, "node1 learns node2 (the recipient)").await;
 
     nodes[0]
         .send_to_peer(addr2, Bytes::from("secret"))
         .await
         .expect("Failed to send direct message");
 
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    wait_until("node2 to receive the secret", READY_TIMEOUT, || {
+        counters[1].load(Ordering::Relaxed) == 1
+    })
+    .await;
 
     assert_eq!(
         counters[0].load(Ordering::Relaxed),
         0,
         "Node1 (sender) should not receive its own message"
-    );
-    assert_eq!(
-        counters[1].load(Ordering::Relaxed),
-        1,
-        "Node2 (recipient) should receive the message"
     );
     assert_eq!(
         counters[2].load(Ordering::Relaxed),

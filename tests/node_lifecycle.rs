@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::init_tracing;
+use common::{init_tracing, wait_for_peers};
 use grapevine::{Node, NodeConfig, NodeConfigBuilder, RateLimitConfig};
 
 /// Test that a node can start up successfully.
@@ -116,6 +116,39 @@ async fn node_shutdown() {
     assert!(shutdown_result.unwrap().is_ok(), "Shutdown should succeed");
 }
 
+/// Test that the listener stops accepting connections after shutdown.
+#[tokio::test(flavor = "multi_thread")]
+async fn listener_stops_accepting_after_shutdown() {
+    init_tracing();
+
+    let node = Node::new(NodeConfig::default())
+        .await
+        .expect("Failed to create node");
+    node.start().await.expect("Failed to start node");
+    let addr = node.local_addr().await.expect("No local address");
+
+    // While running, the listener accepts connections.
+    tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("listener should accept while the node runs");
+
+    node.shutdown().await.expect("Shutdown should succeed");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match tokio::net::TcpStream::connect(addr).await {
+            Err(_) => break,
+            Ok(_) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "listener still accepting connections after shutdown"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+}
+
 /// Test graceful shutdown with connected peers.
 #[tokio::test(flavor = "multi_thread")]
 async fn graceful_shutdown_with_peers() {
@@ -136,7 +169,7 @@ async fn graceful_shutdown_with_peers() {
     let node2 = Node::new(config2).await.expect("Failed to create node2");
     node2.start().await.expect("Failed to start node2");
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for_peers(&node1, 1, "node1 connects to node2 before shutdown").await;
 
     let shutdown_result = tokio::time::timeout(Duration::from_secs(2), node1.shutdown()).await;
 
@@ -211,7 +244,7 @@ async fn validate_config_params() {
     assert!(maybe_config.is_err());
     match maybe_config {
         Err(grapevine::Error::Config(msg)) => {
-            assert!(msg.contains("rate_limit capacity must be > 0"));
+            assert!(msg.contains("Rate limit capacity must be greater than 0"));
         }
         _ => panic!("Expected Config error"),
     }

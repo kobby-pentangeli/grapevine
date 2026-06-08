@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Error;
+
 /// Cleanup interval for removing stale peer buckets (5 minutes).
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(300);
 
@@ -71,16 +73,17 @@ impl RateLimiter {
     /// # Arguments
     /// * `config` - Rate limiting configuration
     ///
-    /// # Panics
-    /// Panics if the configuration is invalid.
-    pub fn new(config: RateLimitConfig) -> Self {
-        config.validate().expect("Invalid rate limit configuration");
+    /// # Errors
+    /// Returns [`Error::Config`] if the configuration is invalid (zero capacity
+    /// or refill rate).
+    pub fn try_new(config: RateLimitConfig) -> crate::Result<Self> {
+        config.validate().map_err(Error::Config)?;
 
-        Self {
+        Ok(Self {
             config,
             buckets: HashMap::new(),
             last_cleanup: Instant::now(),
-        }
+        })
     }
 
     /// Create a new rate limiter with explicit parameters.
@@ -89,10 +92,10 @@ impl RateLimiter {
     /// * `capacity` - Maximum burst size (tokens)
     /// * `refill_rate` - Tokens added per second
     ///
-    /// # Panics
-    /// Panics if capacity or refill_rate is zero.
-    pub fn with_params(capacity: u32, refill_rate: u32) -> Self {
-        Self::new(RateLimitConfig {
+    /// # Errors
+    /// Returns [`Error::Config`] if `capacity` or `refill_rate` is zero.
+    pub fn try_with_params(capacity: u32, refill_rate: u32) -> crate::Result<Self> {
+        Self::try_new(RateLimitConfig {
             enabled: true,
             capacity,
             refill_rate,
@@ -114,7 +117,7 @@ impl RateLimiter {
         let refill_rate = self.config.refill_rate;
 
         let bucket = self.buckets.entry(peer).or_insert_with(|| TokenBucket {
-            tokens: capacity as f64,
+            tokens: f64::from(capacity),
             last_refill: Instant::now(),
         });
 
@@ -133,8 +136,8 @@ impl RateLimiter {
         let now = Instant::now();
         let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
 
-        bucket.tokens += elapsed * refill_rate as f64;
-        bucket.tokens = bucket.tokens.min(capacity as f64);
+        bucket.tokens += elapsed * f64::from(refill_rate);
+        bucket.tokens = bucket.tokens.min(f64::from(capacity));
         bucket.last_refill = now;
     }
 
@@ -175,7 +178,7 @@ mod tests {
 
     #[test]
     fn allows_within_limit() {
-        let mut limiter = RateLimiter::with_params(10, 10);
+        let mut limiter = RateLimiter::try_with_params(10, 10).unwrap();
         let peer = "127.0.0.1:8000".parse().unwrap();
 
         for _ in 0..10 {
@@ -185,7 +188,7 @@ mod tests {
 
     #[test]
     fn blocks_over_limit() {
-        let mut limiter = RateLimiter::with_params(5, 5);
+        let mut limiter = RateLimiter::try_with_params(5, 5).unwrap();
         let peer = "127.0.0.1:8000".parse().unwrap();
 
         for _ in 0..5 {
@@ -200,7 +203,7 @@ mod tests {
 
     #[test]
     fn refills() {
-        let mut limiter = RateLimiter::with_params(2, 10);
+        let mut limiter = RateLimiter::try_with_params(2, 10).unwrap();
         let peer = "127.0.0.1:8000".parse().unwrap();
 
         assert!(limiter.allow_request(peer));
@@ -214,7 +217,7 @@ mod tests {
 
     #[test]
     fn per_peer() {
-        let mut limiter = RateLimiter::with_params(2, 2);
+        let mut limiter = RateLimiter::try_with_params(2, 2).unwrap();
         let peer1 = "127.0.0.1:8000".parse().unwrap();
         let peer2 = "127.0.0.1:8001".parse().unwrap();
 
@@ -238,7 +241,7 @@ mod tests {
             refill_rate: 10,
         };
 
-        let mut limiter = RateLimiter::new(config.clone());
+        let mut limiter = RateLimiter::try_new(config.clone()).unwrap();
         assert_eq!(limiter.config().capacity, 5);
         assert_eq!(limiter.config().refill_rate, 10);
 
@@ -274,21 +277,20 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Invalid rate limit configuration")]
-    fn panics_on_invalid_config() {
+    fn rejects_invalid_config() {
         let invalid_config = RateLimitConfig {
             enabled: true,
             capacity: 0,
             refill_rate: 10,
         };
-        RateLimiter::new(invalid_config);
+        assert!(RateLimiter::try_new(invalid_config).is_err());
     }
 
     #[test]
     fn bucket_cleanup() {
         const TEST_BUCKET_MAX_AGE: Duration = Duration::from_millis(100);
 
-        let mut limiter = RateLimiter::with_params(10, 10);
+        let mut limiter = RateLimiter::try_with_params(10, 10).unwrap();
         let peer1 = "127.0.0.1:8000".parse().unwrap();
         let peer2 = "127.0.0.1:8001".parse().unwrap();
 

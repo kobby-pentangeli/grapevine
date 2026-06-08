@@ -61,14 +61,18 @@ pub enum Error {
     Channel(String),
 
     /// Cryptographic operation failed.
-    #[cfg(feature = "crypto")]
     #[error("Cryptographic error: {0}")]
     Crypto(String),
 
-    /// Invalid signature.
-    #[cfg(feature = "crypto")]
-    #[error("Invalid signature from peer {0}")]
+    /// A message's signature was missing or did not verify against the public
+    /// key it carried.
+    #[error("Invalid signature on message claiming origin {0}")]
     InvalidSignature(SocketAddr),
+
+    /// A message claimed an origin already pinned to a different public key: a
+    /// spoofing attempt.
+    #[error("Origin {0} is pinned to a different key (possible spoofing)")]
+    OriginKeyMismatch(SocketAddr),
 
     /// Internal error.
     #[error("Internal error: {0}")]
